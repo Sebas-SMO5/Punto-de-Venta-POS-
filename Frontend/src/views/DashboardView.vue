@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useProductsStore } from '../stores/products'
 import { useOrdersStore } from '../stores/orders'
+import StatCard from '../components/StatCard.vue'
 
 const productsStore = useProductsStore()
 const ordersStore = useOrdersStore()
@@ -117,12 +118,14 @@ const stats = computed(() => [
     </div>
 
     <div class="stats-grid">
-      <article v-for="stat in stats" :key="stat.label" class="stat-card">
-        <div class="stat-icon">{{ stat.icon }}</div>
-        <p class="stat-label">{{ stat.label }}</p>
-        <h3>{{ stat.value }}</h3>
-        <p class="stat-note">{{ stat.note }}</p>
-      </article>
+      <StatCard
+        v-for="stat in stats"
+        :key="stat.label"
+        :label="stat.label"
+        :value="stat.value"
+        :icon="stat.icon"
+        :note="stat.note"
+      />
     </div>
 
     <div class="dashboard-grid">
@@ -155,7 +158,10 @@ const stats = computed(() => [
                   <strong>#PED-{{ String(order.id).padStart(3, '0') }}</strong>
                   <small class="table-subtitle">
                     {{ getItemsDescription(
-                      order.items.reduce((sum, item) => sum + item.quantity, 0)
+                      order.items.reduce(
+                        (sum, item) => sum + item.quantity,
+                        0,
+                      )
                     ) }}
                   </small>
                 </td>
