@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+frontend/dist/
+frontend/coverage/
+backend/dist/
+backend/coverage/
+.DS_Store
+Thumbs.db
+desktop.
+.vscode/*
+!.vscode/extensions.json
+*.log
