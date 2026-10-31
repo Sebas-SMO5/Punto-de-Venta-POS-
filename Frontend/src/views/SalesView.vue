@@ -1,37 +1,36 @@
-<script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useProductsStore } from '../stores/products'
-import { useOrdersStore } from '../stores/orders'
 
-interface CartItem {
-  productId: number
-  name: string
-  price: number
-  quantity: number
-}
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { useProductsStore } from '../stores/products'
+import { ordersService } from '../services/orders.service'
+import { tablesService, type RestaurantTable } from '../services/tables.service'
+import type { OrderItem } from '../stores/orders'
+
+interface CartItem extends OrderItem {}
 
 const productsStore = useProductsStore()
-const ordersStore = useOrdersStore()
+const tables = ref<RestaurantTable[]>([])
+const selectedTable = ref<number | null>(null)
+const cart = ref<CartItem[]>([])
+const isLoading = ref(false)
 
 const categories = [
   'Todos',
   'Platos fuertes',
   'Acompañamientos',
   'Bebidas',
-  'Postres',
+  'Postres'
 ]
 
 const selectedCategory = ref('Todos')
 const search = ref('')
-const selectedTable = ref('1')
-const cart = ref<CartItem[]>([])
 
 const products = computed(() =>
-  productsStore.products.filter((product) => product.available),
+  productsStore.products.filter(product => product.available)
 )
 
 const filteredProducts = computed(() =>
-  products.value.filter((product) => {
+  products.value.filter(product => {
     const matchesCategory =
       selectedCategory.value === 'Todos' ||
       product.category === selectedCategory.value
@@ -41,22 +40,35 @@ const filteredProducts = computed(() =>
       .includes(search.value.toLowerCase())
 
     return matchesCategory && matchesSearch
-  }),
+  })
 )
 
 const total = computed(() =>
   cart.value.reduce(
     (sum, item) => sum + item.price * item.quantity,
-    0,
-  ),
+    0
+  )
 )
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('es-CO', {
     style: 'currency',
     currency: 'COP',
-    maximumFractionDigits: 0,
+    maximumFractionDigits: 0
   }).format(value)
+}
+
+async function loadTables() {
+  try {
+    tables.value = await tablesService.getAll()
+
+    if (tables.value.length && selectedTable.value === null) {
+      selectedTable.value = tables.value[0].id
+    }
+  } catch (error) {
+    console.error('Error al cargar mesas:', error)
+    alert('No se pudieron cargar las mesas.')
+  }
 }
 
 function addProduct(product: {
@@ -65,7 +77,7 @@ function addProduct(product: {
   price: number
 }) {
   const existing = cart.value.find(
-    (item) => item.productId === product.id,
+    item => item.productId === product.id
   )
 
   if (existing) {
@@ -75,14 +87,14 @@ function addProduct(product: {
       productId: product.id,
       name: product.name,
       price: product.price,
-      quantity: 1,
+      quantity: 1
     })
   }
 }
 
 function changeQuantity(productId: number, amount: number) {
   const item = cart.value.find(
-    (entry) => entry.productId === productId,
+    entry => entry.productId === productId
   )
 
   if (!item) return
@@ -91,35 +103,50 @@ function changeQuantity(productId: number, amount: number) {
 
   if (item.quantity <= 0) {
     cart.value = cart.value.filter(
-      (entry) => entry.productId !== productId,
+      entry => entry.productId !== productId
     )
   }
 }
 
-function createOrder() {
-  if (cart.value.length === 0) {
+async function createOrder() {
+  if (!cart.value.length) {
     alert('Agrega al menos un producto al pedido.')
     return
   }
 
-  const tableNumber = Number(selectedTable.value)
+  if (selectedTable.value === null) {
+    alert('Selecciona una mesa.')
+    return
+  }
 
-  const order = ordersStore.createOrder(
-    tableNumber,
-    cart.value.map((item) => ({
-      productId: item.productId,
-      name: item.name,
-      price: item.price,
-      quantity: item.quantity,
-    })),
-  )
+  try {
+    const order = await ordersService.create(
+      selectedTable.value,
+      cart.value.map(item => ({ ...item }))
+    )
 
-  alert(
-    `¡Pedido #${order.id} creado correctamente!\nMesa: ${order.tableNumber}\nTotal: ${formatCurrency(order.total)}`,
-  )
+    const table = tables.value.find(
+      item => item.id === selectedTable.value
+    )
 
-  cart.value = []
+    alert(
+      `¡Pedido #${order.id} creado correctamente!\nMesa: ${table?.table_number}\nTotal: ${formatCurrency(order.total)}`
+    )
+
+    cart.value = []
+
+    if (navigator.onLine) {
+      await loadTables()
+    }
+  } catch (error) {
+    console.error('Error al crear pedido:', error)
+    alert('No se pudo crear el pedido.')
+  }
 }
+
+onMounted(async () => {
+  await loadTables()
+})
 </script>
 
 <template>
@@ -195,13 +222,14 @@ function createOrder() {
           id="table-select"
           v-model="selectedTable"
           class="search-input"
+          :disabled="isLoading"
         >
           <option
-            v-for="number in 8"
-            :key="number"
-            :value="String(number)"
+            v-for="table in tables"
+            :key="table.id"
+            :value="table.id"
           >
-            Mesa {{ number }}
+            Mesa {{ table.table_number }}
           </option>
         </select>
 
@@ -250,13 +278,14 @@ function createOrder() {
 
           <button
             class="primary-button checkout-button"
+            :disabled="tables.length === 0 || isLoading"
             @click="createOrder"
           >
             Crear pedido
           </button>
 
           <p class="demo-notice">
-            Los pedidos se guardan localmente en este navegador.
+            Los pedidos se guardan en PostgreSQL o localmente si no hay conexión.
           </p>
         </div>
       </aside>
