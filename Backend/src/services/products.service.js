@@ -1,102 +1,60 @@
+const productsRepository = require('../repositories/products.repository')
 
-let products = [
-  { id: 1, name: 'Arroz con pollo', category: 'Platos fuertes', price: 18000, available: true },
-  { id: 2, name: 'Hamburguesa clásica', category: 'Platos fuertes', price: 22000, available: true },
-  { id: 3, name: 'Pizza personal', category: 'Platos fuertes', price: 20000, available: true },
-  { id: 4, name: 'Papas fritas', category: 'Acompañamientos', price: 8000, available: true },
-  { id: 5, name: 'Limonada natural', category: 'Bebidas', price: 6000, available: true },
-  { id: 6, name: 'Agua embotellada', category: 'Bebidas', price: 4000, available: false },
-];
-
-function getAll() {
-  return products;
-}
-
-function getById(id) {
-  return products.find(product => product.id === id);
-}
-
-function create(data) {
-  const { name, category, price, available = true } = data;
-
+function validateProduct(data) {
   if (
-    typeof name !== 'string' ||
-    !name.trim() ||
-    typeof category !== 'string' ||
-    !category.trim() ||
-    !Number.isFinite(price) ||
-    price <= 0 ||
-    typeof available !== 'boolean'
+    typeof data.name !== 'string' ||
+    !data.name.trim() ||
+    typeof data.category !== 'string' ||
+    !data.category.trim() ||
+    !Number.isFinite(Number(data.price)) ||
+    Number(data.price) <= 0 ||
+    (data.available !== undefined && typeof data.available !== 'boolean')
   ) {
-    const error = new Error('Los datos del producto no son válidos');
-    error.status = 400;
-    throw error;
+    const error = new Error('Los datos del producto no son válidos')
+    error.status = 400
+    throw error
   }
 
-  const newId = products.length
-    ? Math.max(...products.map(product => product.id)) + 1
-    : 1;
-
-  const product = {
-    id: newId,
-    name: name.trim(),
-    category: category.trim(),
-    price,
-    available,
-  };
-
-  products.push(product);
-
-  return product;
+  data.price = Number(data.price)
 }
 
-function update(id, data) {
-  const index = products.findIndex(product => product.id === id);
-
-  if (index === -1) {
-    return null;
-  }
-
-  const currentProduct = products[index];
-
-  const updatedProduct = {
-    ...currentProduct,
-    ...data,
-    id,
-  };
-
-  if (
-    typeof updatedProduct.name !== 'string' ||
-    !updatedProduct.name.trim() ||
-    typeof updatedProduct.category !== 'string' ||
-    !updatedProduct.category.trim() ||
-    !Number.isFinite(updatedProduct.price) ||
-    updatedProduct.price <= 0 ||
-    typeof updatedProduct.available !== 'boolean'
-  ) {
-    const error = new Error('Los datos del producto no son válidos');
-    error.status = 400;
-    throw error;
-  }
-
-  updatedProduct.name = updatedProduct.name.trim();
-  updatedProduct.category = updatedProduct.category.trim();
-
-  products[index] = updatedProduct;
-
-  return updatedProduct;
+async function getAll() {
+  return productsRepository.getAll()
 }
 
-function remove(id) {
-  const index = products.findIndex(product => product.id === id);
+async function getById(id) {
+  return productsRepository.getById(id)
+}
 
-  if (index === -1) {
-    return false;
+async function create(data) {
+  validateProduct(data)
+  return productsRepository.create(data)
+}
+
+async function update(id, data) {
+  if (data.name !== undefined || data.category !== undefined ||
+      data.price !== undefined || data.available !== undefined) {
+    const current = await productsRepository.getById(id)
+
+    if (!current) {
+      return null
+    }
+
+    validateProduct({
+      name: data.name ?? current.name,
+      category: data.category ?? current.category,
+      price: Number(data.price ?? current.price),
+      available: data.available ?? current.available
+    })
+
+    data.price = Number(data.price ?? current.price)
   }
 
-  products.splice(index, 1);
+  return productsRepository.update(id, data)
+}
 
-  return true;
+async function remove(id) {
+  return productsRepository.delete(id)
 }
 
 module.exports = {
@@ -104,5 +62,5 @@ module.exports = {
   getById,
   create,
   update,
-  delete: remove,
-};
+  delete: remove
+}

@@ -1,62 +1,65 @@
+const productsService = require('../services/products.service')
 
-const productsService = require('../services/products.service');
-
-function getProducts(req, res, next) {
+async function getProducts(req, res, next) {
   try {
-    res.json(productsService.getAll());
+    const products = await productsService.getAll()
+    res.json(products)
   } catch (error) {
-    next(error);
+    next(error)
   }
 }
 
-function getProductById(req, res, next) {
+async function getProductById(req, res, next) {
   try {
-    const product = productsService.getById(Number(req.params.id));
+    const product = await productsService.getById(Number(req.params.id))
 
     if (!product) {
-      return res.status(404).json({ mensaje: 'Producto no encontrado' });
+      return res.status(404).json({ mensaje: 'Producto no encontrado' })
     }
 
-    res.json(product);
+    res.json(product)
   } catch (error) {
-    next(error);
+    next(error)
   }
 }
 
-function createProduct(req, res, next) {
+async function createProduct(req, res, next) {
   try {
-    const product = productsService.create(req.body);
-    res.status(201).json(product);
+    const product = await productsService.create(req.body)
+    res.status(201).json(product)
   } catch (error) {
-    next(error);
+    next(error)
   }
 }
 
-function updateProduct(req, res, next) {
+async function updateProduct(req, res, next) {
   try {
-    const product = productsService.update(Number(req.params.id), req.body);
+    const product = await productsService.update(
+      Number(req.params.id),
+      req.body
+    )
 
     if (!product) {
-      return res.status(404).json({ mensaje: 'Producto no encontrado' });
+      return res.status(404).json({ mensaje: 'Producto no encontrado' })
     }
 
-    res.json(product);
+    res.json(product)
   } catch (error) {
-    next(error);
+    next(error)
   }
 }
 
-function deleteProduct(req, res, next) {
+async function deleteProduct(req, res, next) {
   try {
-    const deleted = productsService.delete(Number(req.params.id));
+    const deleted = await productsService.delete(Number(req.params.id))
 
     if (!deleted) {
-      return res.status(404).json({ mensaje: 'Producto no encontrado' });
+      return res.status(404).json({ mensaje: 'Producto no encontrado' })
     }
 
-    res.status(200).json({ mensaje: 'Producto eliminado correctamente' });
+    res.json({ mensaje: 'Producto desactivado correctamente' })
   } catch (error) {
-    next(error);
+    next(error)
   }
 }
 
@@ -65,5 +68,5 @@ module.exports = {
   getProductById,
   createProduct,
   updateProduct,
-  deleteProduct,
-};
+  deleteProduct
+}

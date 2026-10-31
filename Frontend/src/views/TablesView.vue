@@ -1,55 +1,138 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useOrdersStore } from '../stores/orders'
+import { computed, onMounted, ref } from 'vue'
+import { api } from '../services/api'
 
-const ordersStore = useOrdersStore()
+interface OrderItem {
+  id: number
+  productId: number
+  name: string
+  quantity: number
+  price: number
+  subtotal: number
+}
 
-const tables = computed(() =>
-  Array.from({ length: 8 }, (_, index) => {
-    const number = index + 1
-    const orders = ordersStore.getOrdersByTable(number)
-    const occupied = orders.length > 0
+interface Order {
+  id: number
+  orderNumber: number
+  status: string
+  total: number
+  notes: string
+  createdAt: string
+  items: OrderItem[]
+}
 
-    return {
-      number,
-      occupied,
-      orders,
-      total: orders.reduce((sum, order) => sum + order.total, 0),
-    }
-  }),
-)
+interface RestaurantTable {
+  id: number
+  table_number: number
+  capacity: number
+  status: string
+  active: boolean
+  orders: Order[]
+}
+
+const tables = ref<RestaurantTable[]>([])
+const isLoading = ref(false)
 
 const occupiedCount = computed(
-  () => tables.value.filter((table) => table.occupied).length,
+  () => tables.value.filter(table => table.orders.length > 0).length
 )
 
-function formatCurrency(value: number) {
+const availableCount = computed(
+  () => tables.value.length - occupiedCount.value
+)
+
+function formatCurrency(value: number | string) {
   return new Intl.NumberFormat('es-CO', {
     style: 'currency',
     currency: 'COP',
-    maximumFractionDigits: 0,
-  }).format(value)
+    maximumFractionDigits: 0
+  }).format(Number(value))
 }
 
-function completeOrder(orderId: number) {
-  const confirmed = window.confirm(
-    '¿Deseas marcar este pedido como entregado?',
-  )
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    pending: 'Pendiente',
+    preparing: 'En preparación',
+    ready: 'Listo',
+    completed: 'Entregado',
+    cancelled: 'Cancelado'
+  }
 
-  if (confirmed) {
-    ordersStore.completeOrder(orderId)
+  return labels[status] || status
+}
+
+async function loadTables() {
+  isLoading.value = true
+
+  try {
+    const response = await api.get<RestaurantTable[]>('/tables')
+
+    tables.value = response.data.map(table => ({
+      ...table,
+      orders: (table.orders || []).map(order => ({
+        ...order,
+        total: Number(order.total),
+        items: (order.items || []).map(item => ({
+          ...item,
+          quantity: Number(item.quantity),
+          price: Number(item.price),
+          subtotal: Number(item.subtotal)
+        }))
+      }))
+    }))
+  } catch (error) {
+    console.error('Error al cargar mesas:', error)
+    alert('No se pudieron cargar las mesas.')
+  } finally {
+    isLoading.value = false
   }
 }
 
-function cancelOrder(orderId: number) {
+function tableTotal(table: RestaurantTable) {
+  return table.orders.reduce(
+    (sum, order) => sum + Number(order.total),
+    0
+  )
+}
+
+async function completeOrder(orderId: number) {
   const confirmed = window.confirm(
-    '¿Deseas cancelar este pedido?',
+    '¿Deseas marcar este pedido como entregado?'
   )
 
-  if (confirmed) {
-    ordersStore.cancelOrder(orderId)
+  if (!confirmed) return
+
+  try {
+    await api.patch(`/orders/${orderId}/status`, {
+      status: 'completed'
+    })
+
+    await loadTables()
+    alert('Pedido entregado correctamente.')
+  } catch (error: any) {
+    console.error('Error al entregar pedido:', error)
+    alert(error.response?.data?.mensaje || 'No se pudo entregar el pedido.')
   }
 }
+
+async function cancelOrder(orderId: number) {
+  const confirmed = window.confirm(
+    '¿Deseas cancelar este pedido?'
+  )
+
+  if (!confirmed) return
+
+  try {
+    await api.delete(`/orders/${orderId}`)
+    await loadTables()
+    alert('Pedido cancelado correctamente.')
+  } catch (error: any) {
+    console.error('Error al cancelar pedido:', error)
+    alert(error.response?.data?.mensaje || 'No se pudo cancelar el pedido.')
+  }
+}
+
+onMounted(loadTables)
 </script>
 
 <template>
@@ -74,7 +157,7 @@ function cancelOrder(orderId: number) {
 
       <article class="stat-card">
         <p class="stat-label">Mesas disponibles</p>
-        <h3>{{ tables.length - occupiedCount }}</h3>
+        <h3>{{ availableCount }}</h3>
       </article>
     </div>
 
@@ -86,22 +169,26 @@ function cancelOrder(orderId: number) {
         </div>
       </div>
 
-      <div class="tables-grid large-tables-grid">
+      <div v-if="isLoading" class="empty-state">
+        Cargando mesas...
+      </div>
+
+      <div v-else class="tables-grid large-tables-grid">
         <article
           v-for="table in tables"
-          :key="table.number"
+          :key="table.id"
           class="table-card"
-          :class="{ occupied: table.occupied }"
+          :class="{ occupied: table.orders.length > 0 }"
         >
           <span class="table-symbol">▦</span>
 
-          <strong>Mesa {{ table.number }}</strong>
+          <strong>Mesa {{ table.table_number }}</strong>
 
           <small>
-            {{ table.occupied ? 'Ocupada' : 'Disponible' }}
+            {{ table.orders.length > 0 ? 'Ocupada' : 'Disponible' }}
           </small>
 
-          <template v-if="table.occupied">
+          <template v-if="table.orders.length > 0">
             <div class="table-orders">
               <article
                 v-for="order in table.orders"
@@ -109,16 +196,19 @@ function cancelOrder(orderId: number) {
                 class="table-order"
               >
                 <div class="order-heading">
-                  <strong>Pedido #{{ order.id }}</strong>
+                  <strong>
+                    Pedido #{{ order.orderNumber || order.id }}
+                  </strong>
+
                   <span class="status-pill pending">
-                    {{ order.status }}
+                    {{ statusLabel(order.status) }}
                   </span>
                 </div>
 
                 <div class="order-products">
                   <p
                     v-for="item in order.items"
-                    :key="item.productId"
+                    :key="item.id"
                   >
                     {{ item.name }} × {{ item.quantity }}
                   </p>
@@ -130,10 +220,7 @@ function cancelOrder(orderId: number) {
                 </div>
 
                 <div
-                  v-if="
-                    order.status !== 'Entregado' &&
-                    order.status !== 'Cancelado'
-                  "
+                  v-if="!['completed', 'cancelled'].includes(order.status)"
                   class="order-actions"
                 >
                   <button
@@ -155,7 +242,7 @@ function cancelOrder(orderId: number) {
 
             <div class="table-total">
               <span>Total de la mesa</span>
-              <strong>{{ formatCurrency(table.total) }}</strong>
+              <strong>{{ formatCurrency(tableTotal(table)) }}</strong>
             </div>
           </template>
 
@@ -163,12 +250,15 @@ function cancelOrder(orderId: number) {
             No hay pedidos activos.
           </p>
         </article>
+
+        <p v-if="tables.length === 0" class="empty-state">
+          No hay mesas registradas.
+        </p>
       </div>
     </section>
 
     <p class="demo-notice">
-      Los pedidos se guardan localmente en este navegador.
-      La conexión con el backend y la sincronización siguen pendientes.
+      Las mesas y sus pedidos se consultan directamente desde PostgreSQL.
     </p>
   </div>
 </template>

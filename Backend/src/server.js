@@ -6,6 +6,10 @@ const pool = require('./config/database')
 
 const productsRoutes = require('./routes/products.routes')
 const ordersRoutes = require('./routes/orders.routes')
+const categoriesRoutes = require('./routes/categories.routes')
+const inventoryRoutes = require('./routes/inventory.routes')
+const salesRoutes = require('./routes/sales.routes')
+const tablesRoutes = require('./routes/tables.routes')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -33,8 +37,14 @@ app.get('/api/health', async (req, res) => {
 
 app.use('/api/products', productsRoutes)
 app.use('/api/orders', ordersRoutes)
+app.use('/api/categories', categoriesRoutes)
+app.use('/api/inventory', inventoryRoutes)
+app.use('/api/sales', salesRoutes)
+app.use('/api/tables', tablesRoutes)
 
 app.use((err, req, res, next) => {
+  console.error(err.message)
+
   res.status(err.status || 500).json({
     mensaje: err.status ? err.message : 'Error interno del servidor'
   })

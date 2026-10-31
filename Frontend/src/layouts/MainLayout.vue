@@ -35,8 +35,12 @@ const menuItems = [
   { label: 'Punto de venta', icon: '＋', to: '/sales' },
   { label: 'Mesas', icon: '▤', to: '/tables' },
   { label: 'Productos', icon: '◇', to: '/products' },
+  { label: 'Categorías', icon: '▧', to: '/categories' },
+  { label: 'Pedidos', icon: '☷', to: '/orders' },
+  { label: 'Inventario', icon: '▤', to: '/inventory' },
+  { label: 'Historial de ventas', icon: '▥', to: '/sales-history' },
+  { label: 'Sincronización', icon: '⟳', to: '/sync' },
 ]
-
 </script>
 
 <template>
@@ -105,3 +109,4 @@ const menuItems = [
     </main>
   </div>
 </template>
+

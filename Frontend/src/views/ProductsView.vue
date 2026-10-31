@@ -1,29 +1,38 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useProductsStore, type Product } from '../stores/products'
+import { computed, onMounted, ref } from 'vue'
+import { api } from '../services/api'
 
-const productsStore = useProductsStore()
-const products = computed(() => productsStore.products)
+interface Product {
+  id: number
+  category_id: number
+  name: string
+  description: string
+  category: string
+  price: number | string
+  available: boolean
+}
+
+interface Category {
+  id: number
+  name: string
+  active: boolean
+}
+
+const products = ref<Product[]>([])
+const categories = ref<Category[]>([])
 
 const search = ref('')
 const selectedCategory = ref('Todas')
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
+const isLoading = ref(false)
 
 const form = ref({
   name: '',
-  category: 'Platos fuertes',
+  category: '',
   price: 0,
   available: true,
 })
-
-const categories = [
-  'Todas',
-  'Platos fuertes',
-  'Acompañamientos',
-  'Bebidas',
-  'Postres',
-]
 
 const filteredProducts = computed(() =>
   products.value.filter((product) => {
@@ -43,12 +52,45 @@ const availableCount = computed(
   () => products.value.filter((product) => product.available).length,
 )
 
-function formatCurrency(value: number) {
+function formatCurrency(value: number | string) {
   return new Intl.NumberFormat('es-CO', {
     style: 'currency',
     currency: 'COP',
     maximumFractionDigits: 0,
-  }).format(value)
+  }).format(Number(value))
+}
+
+async function loadProducts() {
+  isLoading.value = true
+
+  try {
+    const [productsResponse, categoriesResponse] = await Promise.all([
+      api.get<Product[]>('/products'),
+      api.get<Category[]>('/categories'),
+    ])
+
+    products.value = productsResponse.data.map((product) => ({
+      ...product,
+      price: Number(product.price),
+    }))
+
+    categories.value = categoriesResponse.data.filter(
+      (category) => category.active,
+    )
+
+    if (
+      !categories.value.some(
+        (category) => category.name === form.value.category,
+      )
+    ) {
+      form.value.category = categories.value[0]?.name || ''
+    }
+  } catch (error) {
+    console.error('Error al cargar productos:', error)
+    alert('No se pudieron cargar los productos.')
+  } finally {
+    isLoading.value = false
+  }
 }
 
 function openCreateForm() {
@@ -56,9 +98,14 @@ function openCreateForm() {
 
   form.value = {
     name: '',
-    category: 'Platos fuertes',
+    category: categories.value[0]?.name || '',
     price: 0,
     available: true,
+  }
+
+  if (categories.value.length === 0) {
+    alert('Primero debes registrar una categoría.')
+    return
   }
 
   showForm.value = true
@@ -70,57 +117,64 @@ function editProduct(product: Product) {
   form.value = {
     name: product.name,
     category: product.category,
-    price: product.price,
+    price: Number(product.price),
     available: product.available,
   }
 
   showForm.value = true
 }
 
-function saveProduct() {
+async function saveProduct() {
   const name = form.value.name.trim()
   const price = Number(form.value.price)
 
-  if (!name || !Number.isFinite(price) || price <= 0) {
-    alert('Ingresa un nombre y un precio mayor que cero.')
+  if (!name || !form.value.category || !Number.isFinite(price) || price <= 0) {
+    alert('Completa los campos correctamente.')
     return
   }
 
-  if (editingId.value !== null) {
-    const product = products.value.find(
-      (item) => item.id === editingId.value,
-    )
-
-    if (product) {
-      productsStore.updateProduct({
-        id: product.id,
-        name,
-        category: form.value.category,
-        price,
-        available: form.value.available,
-      })
-    }
-  } else {
-    productsStore.addProduct({
-      name,
-      category: form.value.category,
-      price,
-      available: form.value.available,
-    })
+  const data = {
+    name,
+    category: form.value.category,
+    price,
+    available: form.value.available,
   }
 
-  showForm.value = false
+  try {
+    if (editingId.value !== null) {
+      await api.put(`/products/${editingId.value}`, data)
+    } else {
+      await api.post('/products', data)
+    }
+
+    showForm.value = false
+    await loadProducts()
+
+    alert('Producto guardado correctamente.')
+  } catch (error: any) {
+    console.error('Error al guardar producto:', error)
+    alert(error.response?.data?.mensaje || 'No se pudo guardar el producto.')
+  }
 }
 
-function deleteProduct(id: number) {
+async function deleteProduct(id: number) {
   const confirmed = window.confirm(
-    '¿Deseas eliminar este producto?',
+    '¿Deseas desactivar este producto?',
   )
 
   if (!confirmed) return
 
-  productsStore.deleteProduct(id)
+  try {
+    await api.delete(`/products/${id}`)
+    await loadProducts()
+    alert('Producto desactivado correctamente.')
+  } catch (error: any) {
+    console.error('Error al eliminar producto:', error)
+    alert(error.response?.data?.mensaje || 'No se pudo desactivar el producto.')
+  }
 }
+
+onMounted(loadProducts)
 </script>
 
 <template>
@@ -167,12 +221,14 @@ function deleteProduct(id: number) {
           class="search-input category-select"
           aria-label="Filtrar por categoría"
         >
+          <option value="Todas">Todas</option>
+
           <option
             v-for="category in categories"
-            :key="category"
-            :value="category"
+            :key="category.id"
+            :value="category.name"
           >
-            {{ category }}
+            {{ category.name }}
           </option>
         </select>
       </div>
@@ -190,6 +246,10 @@ function deleteProduct(id: number) {
           </thead>
 
           <tbody>
+            <tr v-if="isLoading">
+              <td colspan="5">Cargando productos...</td>
+            </tr>
+
             <tr
               v-for="product in filteredProducts"
               :key="product.id"
@@ -230,7 +290,7 @@ function deleteProduct(id: number) {
               </td>
             </tr>
 
-            <tr v-if="filteredProducts.length === 0">
+            <tr v-if="!isLoading && filteredProducts.length === 0">
               <td colspan="5">No se encontraron productos.</td>
             </tr>
           </tbody>
@@ -264,13 +324,14 @@ function deleteProduct(id: number) {
           id="product-category"
           v-model="form.category"
           class="search-input"
+          required
         >
           <option
-            v-for="category in categories.filter((item) => item !== 'Todas')"
-            :key="category"
-            :value="category"
+            v-for="category in categories"
+            :key="category.id"
+            :value="category.name"
           >
-            {{ category }}
+            {{ category.name }}
           </option>
         </select>
 
@@ -308,8 +369,7 @@ function deleteProduct(id: number) {
     </div>
 
     <p class="demo-notice">
-      Los productos se guardan localmente en este navegador.
-      La sincronización con el servidor todavía está pendiente.
+      Los productos se consultan y almacenan directamente en PostgreSQL.
     </p>
   </div>
 </template>
