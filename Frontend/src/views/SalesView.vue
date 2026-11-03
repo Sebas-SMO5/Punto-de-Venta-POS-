@@ -145,7 +145,15 @@ async function createOrder() {
 }
 
 onMounted(async () => {
-  await loadTables()
+  try {
+    await Promise.all([
+      productsStore.loadProducts(),
+      loadTables()
+    ])
+  } catch (error) {
+    console.error('Error al inicializar el punto de venta:', error)
+    alert('No se pudieron cargar los productos o las mesas.')
+  }
 })
 </script>
 

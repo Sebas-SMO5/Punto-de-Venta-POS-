@@ -1,4 +1,44 @@
+
 const pool = require('../config/database')
+
+async function getOrderById(db, id) {
+  const result = await db.query(`
+    SELECT
+      o.id,
+      o.order_number,
+      o.table_id,
+      rt.table_number,
+      o.user_id,
+      o.order_type,
+      o.status,
+      o.notes,
+      o.subtotal,
+      o.tax,
+      o.total,
+      o.created_at,
+      COALESCE(
+        json_agg(
+          json_build_object(
+            'id', oi.id,
+            'productId', oi.product_id,
+            'name', p.name,
+            'quantity', oi.quantity,
+            'price', oi.unit_price,
+            'subtotal', oi.subtotal
+          )
+        ) FILTER (WHERE oi.id IS NOT NULL),
+        '[]'
+      ) AS items
+    FROM orders o
+    LEFT JOIN restaurant_tables rt ON rt.id = o.table_id
+    LEFT JOIN order_items oi ON oi.order_id = o.id
+    LEFT JOIN products p ON p.id = oi.product_id
+    WHERE o.id = $1
+    GROUP BY o.id, rt.table_number
+  `, [id])
+
+  return result.rows[0] || null
+}
 
 async function getAll() {
   const result = await pool.query(`
@@ -40,42 +80,7 @@ async function getAll() {
 }
 
 async function getById(id) {
-  const result = await pool.query(`
-    SELECT
-      o.id,
-      o.order_number,
-      o.table_id,
-      rt.table_number,
-      o.user_id,
-      o.order_type,
-      o.status,
-      o.notes,
-      o.subtotal,
-      o.tax,
-      o.total,
-      o.created_at,
-      COALESCE(
-        json_agg(
-          json_build_object(
-            'id', oi.id,
-            'productId', oi.product_id,
-            'name', p.name,
-            'quantity', oi.quantity,
-            'price', oi.unit_price,
-            'subtotal', oi.subtotal
-          )
-        ) FILTER (WHERE oi.id IS NOT NULL),
-        '[]'
-      ) AS items
-    FROM orders o
-    LEFT JOIN restaurant_tables rt ON rt.id = o.table_id
-    LEFT JOIN order_items oi ON oi.order_id = o.id
-    LEFT JOIN products p ON p.id = oi.product_id
-    WHERE o.id = $1
-    GROUP BY o.id, rt.table_number
-  `, [id])
-
-  return result.rows[0] || null
+  return getOrderById(pool, id)
 }
 
 async function create(data) {
@@ -84,8 +89,13 @@ async function create(data) {
   try {
     await client.query('BEGIN')
 
+    await client.query('SELECT pg_advisory_xact_lock(73142)')
+
     const tableResult = await client.query(
-      `SELECT id, status FROM restaurant_tables WHERE id = $1 AND active = TRUE FOR UPDATE`,
+      `SELECT id, status
+       FROM restaurant_tables
+       WHERE id = $1 AND active = TRUE
+       FOR UPDATE`,
       [data.tableId]
     )
 
@@ -113,7 +123,9 @@ async function create(data) {
     const productIds = data.items.map(item => item.productId)
 
     const productsResult = await client.query(
-      `SELECT id, name, price FROM products WHERE id = ANY($1::int[]) AND active = TRUE`,
+      `SELECT id, name, price
+       FROM products
+       WHERE id = ANY($1::int[]) AND active = TRUE`,
       [productIds]
     )
 
@@ -144,11 +156,22 @@ async function create(data) {
       0
     )
 
-    const orderNumberResult = await client.query(
-      'SELECT COALESCE(MAX(order_number), 0) + 1 AS next_number FROM orders'
-    )
+    const orderNumberResult = await client.query(`
+      SELECT COALESCE(
+        MAX(
+          CASE
+            WHEN order_number ~ '^PED-[0-9]+$'
+            THEN SUBSTRING(order_number FROM 5)::BIGINT
+          END
+        ),
+        0
+      ) + 1 AS next_number
+      FROM orders
+    `)
 
-    const orderNumber = orderNumberResult.rows[0].next_number
+    const orderNumber = `PED-${String(
+      orderNumberResult.rows[0].next_number
+    ).padStart(6, '0')}`
 
     const orderResult = await client.query(`
       INSERT INTO orders (
@@ -200,9 +223,11 @@ async function create(data) {
       WHERE id = $1
     `, [data.tableId])
 
+    const order = await getOrderById(client, orderId)
+
     await client.query('COMMIT')
 
-    return await getById(orderId)
+    return order
   } catch (error) {
     await client.query('ROLLBACK')
     throw error
@@ -218,7 +243,10 @@ async function updateStatus(id, status) {
     await client.query('BEGIN')
 
     const current = await client.query(
-      'SELECT id, status, table_id FROM orders WHERE id = $1 FOR UPDATE',
+      `SELECT id, status, table_id
+       FROM orders
+       WHERE id = $1
+       FOR UPDATE`,
       [id]
     )
 
@@ -233,11 +261,10 @@ async function updateStatus(id, status) {
       throw error
     }
 
-    const updated = await client.query(`
+    await client.query(`
       UPDATE orders
       SET status = $1, updated_at = NOW()
       WHERE id = $2
-      RETURNING id
     `, [status, id])
 
     if (status === 'completed' || status === 'cancelled') {
@@ -258,9 +285,11 @@ async function updateStatus(id, status) {
       }
     }
 
+    const order = await getOrderById(client, id)
+
     await client.query('COMMIT')
 
-    return await getById(updated.rows[0].id)
+    return order
   } catch (error) {
     await client.query('ROLLBACK')
     throw error

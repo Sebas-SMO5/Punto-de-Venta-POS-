@@ -1,3 +1,4 @@
+
 const pool = require('../config/database')
 
 async function getAll() {
@@ -106,7 +107,139 @@ async function getById(id) {
   return result.rows[0] || null
 }
 
+async function createFromOrder(orderId, paymentMethodId, reference = null) {
+  const client = await pool.connect()
+
+  try {
+    await client.query('BEGIN')
+
+    const orderResult = await client.query(`
+      SELECT *
+      FROM orders
+      WHERE id = $1
+      FOR UPDATE
+    `, [orderId])
+
+    if (orderResult.rows.length === 0) {
+      throw new Error('El pedido no existe')
+    }
+
+    const order = orderResult.rows[0]
+
+    if (order.status !== 'completed') {
+      throw new Error('Solo se pueden registrar ventas de pedidos completados')
+    }
+
+    const existingSale = await client.query(
+      'SELECT id FROM sales WHERE order_id = $1',
+      [orderId]
+    )
+
+    if (existingSale.rows.length > 0) {
+      throw new Error('Este pedido ya tiene una venta registrada')
+    }
+
+    const methodResult = await client.query(`
+      SELECT id
+      FROM payment_methods
+      WHERE id = $1 AND active = TRUE
+    `, [paymentMethodId])
+
+    if (methodResult.rows.length === 0) {
+      throw new Error('El medio de pago no existe o está inactivo')
+    }
+
+    const itemsResult = await client.query(`
+      SELECT
+        oi.product_id,
+        p.name AS product_name,
+        oi.quantity,
+        oi.unit_price,
+        oi.subtotal
+      FROM order_items oi
+      INNER JOIN products p ON p.id = oi.product_id
+      WHERE oi.order_id = $1
+    `, [orderId])
+
+    if (itemsResult.rows.length === 0) {
+      throw new Error('El pedido no tiene productos registrados')
+    }
+
+    const saleNumber = `VTA-${String(order.id).padStart(6, '0')}`
+
+    const saleResult = await client.query(`
+      INSERT INTO sales (
+        order_id,
+        user_id,
+        sale_number,
+        subtotal,
+        tax,
+        discount,
+        total
+      )
+      VALUES ($1, $2, $3, $4, $5, 0, $6)
+      RETURNING id
+    `, [
+      order.id,
+      order.user_id,
+      saleNumber,
+      order.subtotal,
+      order.tax,
+      order.total
+    ])
+
+    const saleId = saleResult.rows[0].id
+
+    for (const item of itemsResult.rows) {
+      await client.query(`
+        INSERT INTO sale_items (
+          sale_id,
+          product_id,
+          product_name,
+          quantity,
+          unit_price,
+          subtotal
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        saleId,
+        item.product_id,
+        item.product_name,
+        item.quantity,
+        item.unit_price,
+        item.subtotal
+      ])
+    }
+
+    await client.query(`
+      INSERT INTO payments (
+        sale_id,
+        payment_method_id,
+        amount,
+        reference
+      )
+      VALUES ($1, $2, $3, $4)
+    `, [
+      saleId,
+      paymentMethodId,
+      order.total,
+      reference
+    ])
+
+    await client.query('COMMIT')
+
+    return await getById(saleId)
+
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 module.exports = {
   getAll,
-  getById
+  getById,
+  createFromOrder
 }
