@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { api } from '../services/api'
-
-interface InventoryItem {
-  id: number
-  product: string
-  stock: number
-  minimum: number
-}
+import {
+  inventoryService,
+  type InventoryItem
+} from '../services/inventory.service'
 
 const inventory = ref<InventoryItem[]>([])
 const search = ref('')
 const isLoading = ref(false)
+const errorMessage = ref('')
+const isOffline = ref(!navigator.onLine)
 
 const filteredInventory = computed(() =>
   inventory.value.filter(item =>
@@ -29,23 +27,33 @@ function formatNumber(value: number) {
 
 async function loadInventory() {
   isLoading.value = true
+  errorMessage.value = ''
+  isOffline.value = !navigator.onLine
 
   try {
-    const response = await api.get('/inventory')
-    inventory.value = response.data.map((item: InventoryItem) => ({
-      ...item,
-      stock: Number(item.stock),
-      minimum: Number(item.minimum)
-    }))
+    inventory.value = await inventoryService.getAll()
   } catch (error) {
     console.error('Error al cargar inventario:', error)
-    alert('No se pudo cargar el inventario.')
+    errorMessage.value = 'No se pudo cargar el inventario.'
   } finally {
     isLoading.value = false
   }
 }
 
-onMounted(loadInventory)
+function handleConnectionChange() {
+  isOffline.value = !navigator.onLine
+
+  if (navigator.onLine) {
+    loadInventory()
+  }
+}
+
+onMounted(() => {
+  loadInventory()
+
+  window.addEventListener('online', handleConnectionChange)
+  window.addEventListener('offline', handleConnectionChange)
+})
 </script>
 
 <template>
@@ -55,6 +63,10 @@ onMounted(loadInventory)
         <h2>Inventario</h2>
         <p>Consulta las existencias y los niveles mínimos de los productos.</p>
       </div>
+    </div>
+
+    <div v-if="isOffline" class="demo-notice">
+      Estás trabajando sin conexión. Se muestran los datos guardados localmente.
     </div>
 
     <div class="stats-grid products-summary">
@@ -85,6 +97,10 @@ onMounted(loadInventory)
         >
       </div>
 
+      <div v-if="errorMessage" class="error-message">
+        {{ errorMessage }}
+      </div>
+
       <div class="table-scroll">
         <table>
           <thead>
@@ -101,7 +117,10 @@ onMounted(loadInventory)
               <td colspan="4">Cargando inventario...</td>
             </tr>
 
-            <tr v-for="item in filteredInventory" :key="item.id">
+            <tr
+              v-for="item in filteredInventory"
+              :key="item.id"
+            >
               <td><strong>{{ item.product }}</strong></td>
               <td>{{ formatNumber(item.stock) }}</td>
               <td>{{ formatNumber(item.minimum) }}</td>
@@ -127,7 +146,8 @@ onMounted(loadInventory)
     </section>
 
     <p class="demo-notice">
-      El inventario se consulta directamente desde PostgreSQL.
+      El inventario se consulta desde PostgreSQL y se almacena localmente para
+      permitir su consulta sin conexión.
     </p>
   </div>
 </template>

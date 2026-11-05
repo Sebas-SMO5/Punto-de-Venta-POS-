@@ -1,10 +1,10 @@
-
 const pool = require('../config/database')
 
 async function getOrderById(db, id) {
   const result = await db.query(`
     SELECT
       o.id,
+      o.local_id,
       o.order_number,
       o.table_id,
       rt.table_number,
@@ -44,6 +44,7 @@ async function getAll() {
   const result = await pool.query(`
     SELECT
       o.id,
+      o.local_id,
       o.order_number,
       o.table_id,
       rt.table_number,
@@ -90,6 +91,27 @@ async function create(data) {
     await client.query('BEGIN')
 
     await client.query('SELECT pg_advisory_xact_lock(73142)')
+
+    if (data.localId) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+      if (!uuidRegex.test(data.localId)) {
+        const error = new Error('El identificador local del pedido no es válido')
+        error.status = 400
+        throw error
+      }
+
+      const existingOrder = await client.query(
+        'SELECT id FROM orders WHERE local_id = $1',
+        [data.localId]
+      )
+
+      if (existingOrder.rows.length) {
+        const order = await getOrderById(client, existingOrder.rows[0].id)
+        await client.query('COMMIT')
+        return order
+      }
+    }
 
     const tableResult = await client.query(
       `SELECT id, status
@@ -175,6 +197,7 @@ async function create(data) {
 
     const orderResult = await client.query(`
       INSERT INTO orders (
+        local_id,
         table_id,
         user_id,
         order_number,
@@ -185,9 +208,13 @@ async function create(data) {
         tax,
         total
       )
-      VALUES ($1, $2, $3, $4, 'pending', $5, $6, 0, $6)
+      VALUES (
+        COALESCE($1::uuid, gen_random_uuid()),
+        $2, $3, $4, $5, 'pending', $6, $7, 0, $7
+      )
       RETURNING id
     `, [
+      data.localId || null,
       data.tableId,
       userResult.rows[0].id,
       orderNumber,

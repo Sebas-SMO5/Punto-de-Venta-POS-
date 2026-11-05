@@ -1,7 +1,12 @@
-
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../services/api'
+import { ordersService } from '../services/orders.service'
+import {
+  getLocalData,
+  saveLocalData
+} from '../offline/db'
+import { addOperation } from '../offline/queue'
 
 interface OrderItem {
   id: number
@@ -28,6 +33,18 @@ interface Sale {
   id: number
   order_id: number
   sale_number: string
+  created_at?: string
+  total?: number
+  status?: string
+  items?: OrderItem[]
+  payments?: {
+    id: number
+    amount: number
+    status: string
+    method: string
+    reference: string | null
+  }[]
+  pendingSync?: boolean
 }
 
 const orders = ref<Order[]>([])
@@ -36,6 +53,7 @@ const isLoading = ref(false)
 const isRegistering = ref(false)
 const selectedOrder = ref<Order | null>(null)
 const selectedPaymentMethod = ref(1)
+const isOffline = ref(!navigator.onLine)
 
 const paymentMethods = [
   { id: 1, name: 'Efectivo' },
@@ -81,31 +99,52 @@ function statusLabel(status: string) {
     preparing: 'En preparación',
     ready: 'Listo',
     completed: 'Entregado',
-    cancelled: 'Cancelado'
+    cancelled: 'Cancelado',
+    pending_sync: 'Pendiente de sincronización'
   }
 
   return labels[status] || status
 }
 
 function hasSale(orderId: number) {
-  return sales.value.some(sale => Number(sale.order_id) === orderId)
+  return sales.value.some(sale =>
+    Number(sale.order_id) === orderId
+  )
 }
 
 async function loadOrders() {
   isLoading.value = true
 
   try {
-    const response = await api.get<Order[]>('/orders')
+    const response = await ordersService.getAll()
 
-    orders.value = response.data.map(order => ({
-      ...order,
-      total: Number(order.total),
-      items: (order.items || []).map(item => ({
-        ...item,
-        quantity: Number(item.quantity),
-        price: Number(item.price),
-        subtotal: Number(item.subtotal)
-      }))
+    orders.value = response.map((order: any) => ({
+      id: Number(order.id),
+      order_number: order.order_number || `PED-${order.id}`,
+      table_id: Number(order.table_id ?? order.tableNumber ?? 0),
+      table_number: order.table_number ?? order.tableNumber ?? null,
+      items: (order.items || []).map((item: any) => ({
+        id: Number(item.id ?? item.productId ?? item.product_id ?? 0),
+        productId: Number(item.productId ?? item.product_id ?? 0),
+        name: item.name || item.product_name || 'Producto',
+        quantity: Number(item.quantity || 0),
+        price: Number(item.price ?? item.unit_price ?? 0),
+        subtotal: Number(
+          item.subtotal ??
+          (Number(item.price ?? item.unit_price ?? 0) *
+            Number(item.quantity || 0))
+        )
+      })),
+      notes: order.notes || '',
+      total: Number(order.total || 0),
+      status: ({
+        'Pendiente': 'pending',
+        'En preparación': 'preparing',
+        'Listo': 'ready',
+        'Entregado': 'completed',
+        'Cancelado': 'cancelled'
+      } as Record<string, string>)[order.status] || order.status,
+      created_at: order.created_at || order.createdAt || new Date().toISOString()
     }))
   } catch (error) {
     console.error('Error al cargar pedidos:', error)
@@ -117,15 +156,52 @@ async function loadOrders() {
 
 async function loadSales() {
   try {
+    if (!navigator.onLine) {
+      sales.value = await getLocalData('sales') as unknown as Sale[]
+      return
+    }
+
     const response = await api.get<Sale[]>('/sales')
-    sales.value = response.data
+    const serverSales = response.data
+
+    const localSales = await getLocalData('sales') as unknown as Sale[]
+
+    const pendingSales = localSales.filter(sale =>
+      sale.pendingSync === true
+    )
+
+    const combinedSales = [
+      ...serverSales,
+      ...pendingSales.filter(localSale =>
+        !serverSales.some(serverSale =>
+          Number(serverSale.order_id) === Number(localSale.order_id)
+        )
+      )
+    ]
+
+    sales.value = combinedSales
+
+    for (const sale of serverSales) {
+      await saveLocalData(
+        'sales',
+        sale as unknown as Record<string, unknown> & { id: number }
+      )
+    }
   } catch (error) {
     console.error('Error al cargar ventas:', error)
-    alert('No se pudieron consultar las ventas.')
+    sales.value = await getLocalData('sales') as unknown as Sale[]
   }
 }
 
-async function updateStatus(id: number, status: 'completed' | 'cancelled') {
+async function updateStatus(
+  id: number,
+  status: 'completed' | 'cancelled'
+) {
+  if (!navigator.onLine) {
+    alert('Necesitas conexión a internet para actualizar el estado del pedido.')
+    return
+  }
+
   const message = status === 'completed'
     ? '¿Marcar este pedido como entregado?'
     : '¿Cancelar este pedido?'
@@ -136,9 +212,7 @@ async function updateStatus(id: number, status: 'completed' | 'cancelled') {
     if (status === 'cancelled') {
       await api.delete(`/orders/${id}`)
     } else {
-      await api.patch(`/orders/${id}/status`, {
-        status
-      })
+      await api.patch(`/orders/${id}/status`, { status })
     }
 
     await loadOrders()
@@ -150,43 +224,110 @@ async function updateStatus(id: number, status: 'completed' | 'cancelled') {
 }
 
 function openSaleModal(order: Order) {
+  if (hasSale(order.id)) {
+    alert('Este pedido ya tiene una venta registrada.')
+    return
+  }
+
   selectedOrder.value = order
   selectedPaymentMethod.value = 1
 }
 
 function closeSaleModal() {
   if (isRegistering.value) return
-
   selectedOrder.value = null
 }
 
 async function registerSale() {
   if (!selectedOrder.value) return
 
+  const order = selectedOrder.value
+
+  if (hasSale(order.id)) {
+    alert('Este pedido ya tiene una venta registrada.')
+    selectedOrder.value = null
+    return
+  }
+
   isRegistering.value = true
 
   try {
-    const response = await api.post('/sales', {
-      orderId: selectedOrder.value.id,
-      paymentMethodId: selectedPaymentMethod.value,
-      reference: null
-    })
+    if (navigator.onLine) {
+      const response = await api.post('/sales', {
+        orderId: order.id,
+        paymentMethodId: selectedPaymentMethod.value,
+        reference: null
+      })
 
-    const saleNumber = response.data.venta.sale_number
+      const registeredSale = response.data.venta
 
-    alert(
-      `¡Venta registrada correctamente!\n\nVenta: ${saleNumber}\nPedido: ${selectedOrder.value.order_number}\nTotal: ${formatCurrency(selectedOrder.value.total)}`
+      alert(
+        `¡Venta registrada correctamente!\n\nVenta: ${registeredSale.sale_number}\nPedido: ${order.order_number}\nTotal: ${formatCurrency(order.total)}`
+      )
+
+      selectedOrder.value = null
+
+      await Promise.all([
+        loadOrders(),
+        loadSales()
+      ])
+
+      return
+    }
+
+    const operationId = crypto.randomUUID()
+    const localSaleId = -Date.now()
+
+    const paymentMethod = paymentMethods.find(
+      method => method.id === selectedPaymentMethod.value
     )
 
+    const localSale: Sale = {
+      id: localSaleId,
+      order_id: order.id,
+      sale_number: `PEND-${Math.abs(localSaleId)}`,
+      created_at: new Date().toISOString(),
+      total: order.total,
+      status: 'pending_sync',
+      pendingSync: true,
+      items: order.items,
+      payments: [
+        {
+          id: localSaleId,
+          amount: order.total,
+          status: 'pending_sync',
+          method: paymentMethod?.name || 'No especificado',
+          reference: null
+        }
+      ]
+    }
+
+    await saveLocalData(
+      'sales',
+      localSale as unknown as Record<string, unknown> & { id: number }
+    )
+
+    await addOperation({
+      operationId,
+      type: 'CREATE',
+      entity: 'sales',
+      data: {
+        orderId: order.id,
+        paymentMethodId: selectedPaymentMethod.value,
+        reference: null,
+        localSaleId,
+        localOrderId: order.id
+      }
+    })
+
+    sales.value.push(localSale)
     selectedOrder.value = null
 
-    await Promise.all([
-      loadOrders(),
-      loadSales()
-    ])
+    alert(
+      `Venta guardada correctamente sin conexión.\n\nVenta: ${localSale.sale_number}\nPedido: ${order.order_number}\nTotal: ${formatCurrency(order.total)}\n\nSe sincronizará cuando vuelva internet.`
+    )
   } catch (error: any) {
     console.error('Error al registrar venta:', error)
-
     alert(
       error.response?.data?.mensaje ||
       'No se pudo registrar la venta.'
@@ -196,11 +337,28 @@ async function registerSale() {
   }
 }
 
+function handleConnectionChange() {
+  isOffline.value = !navigator.onLine
+
+  if (navigator.onLine) {
+    loadOrders()
+    loadSales()
+  }
+}
+
 onMounted(async () => {
   await Promise.all([
     loadOrders(),
     loadSales()
   ])
+
+  window.addEventListener('online', handleConnectionChange)
+  window.addEventListener('offline', handleConnectionChange)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('online', handleConnectionChange)
+  window.removeEventListener('offline', handleConnectionChange)
 })
 </script>
 
@@ -211,6 +369,10 @@ onMounted(async () => {
         <h2>Pedidos</h2>
         <p>Consulta y administra los pedidos registrados.</p>
       </div>
+    </div>
+
+    <div v-if="isOffline" class="demo-notice">
+      Estás trabajando sin conexión. Las ventas nuevas se guardarán localmente.
     </div>
 
     <div class="stats-grid products-summary">
@@ -250,10 +412,7 @@ onMounted(async () => {
               <td colspan="7">Cargando pedidos...</td>
             </tr>
 
-            <tr
-              v-for="order in sortedOrders"
-              :key="order.id"
-            >
+            <tr v-for="order in sortedOrders" :key="order.id">
               <td>
                 <strong>{{ order.order_number || order.id }}</strong>
               </td>
@@ -306,7 +465,7 @@ onMounted(async () => {
 
                 <div v-else-if="order.status === 'completed'">
                   <span v-if="hasSale(order.id)" class="status-pill ready">
-                    Vendido
+                    {{ sales.find(sale => Number(sale.order_id) === order.id)?.pendingSync ? 'Pendiente de sincronización' : 'Vendido' }}
                   </span>
 
                   <button
@@ -390,7 +549,8 @@ onMounted(async () => {
     </div>
 
     <p class="demo-notice">
-      Los pedidos y las ventas se consultan directamente desde PostgreSQL.
+      Los pedidos y las ventas se almacenan localmente para permitir su consulta
+      y registro sin conexión.
     </p>
   </div>
 </template>

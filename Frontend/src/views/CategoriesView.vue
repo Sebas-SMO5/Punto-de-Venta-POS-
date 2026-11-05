@@ -1,14 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { api } from '../services/api'
-
-interface Category {
-  id: number
-  name: string
-  description: string
-  active: boolean
-  created_at?: string
-}
+import {
+  categoriesService,
+  type Category
+} from '../services/categories.service'
 
 const categories = ref<Category[]>([])
 const search = ref('')
@@ -35,8 +30,7 @@ async function loadCategories() {
   errorMessage.value = ''
 
   try {
-    const response = await api.get<Category[]>('/categories')
-    categories.value = response.data
+    categories.value = await categoriesService.getAll()
   } catch (error) {
     console.error('Error al consultar categorías:', error)
     errorMessage.value = 'No fue posible consultar las categorías.'
@@ -47,11 +41,13 @@ async function loadCategories() {
 
 function openCreateForm() {
   editingId.value = null
+
   form.value = {
     name: '',
     description: '',
     active: true
   }
+
   showForm.value = true
 }
 
@@ -78,6 +74,8 @@ async function saveCategory() {
   saving.value = true
   errorMessage.value = ''
 
+  const isEditing = editingId.value !== null
+
   try {
     const data = {
       name,
@@ -85,10 +83,10 @@ async function saveCategory() {
       active: form.value.active
     }
 
-    if (editingId.value !== null) {
-      await api.put(`/categories/${editingId.value}`, data)
+    if (isEditing && editingId.value !== null) {
+      await categoriesService.update(editingId.value, data)
     } else {
-      await api.post('/categories', data)
+      await categoriesService.create(data)
     }
 
     showForm.value = false
@@ -96,14 +94,17 @@ async function saveCategory() {
     await loadCategories()
 
     alert(
-      editingId.value === null
-        ? 'Categoría registrada correctamente.'
-        : 'Categoría actualizada correctamente.'
+      isEditing
+        ? 'Categoría actualizada correctamente.'
+        : 'Categoría registrada correctamente.'
     )
   } catch (error: any) {
     console.error('Error al guardar categoría:', error)
+
     errorMessage.value =
-      error.response?.data?.mensaje || 'No fue posible guardar la categoría.'
+      error.response?.data?.mensaje ||
+      error.message ||
+      'No fue posible guardar la categoría.'
   } finally {
     saving.value = false
   }
@@ -117,13 +118,18 @@ async function deleteCategory(id: number) {
   errorMessage.value = ''
 
   try {
-    await api.delete(`/categories/${id}`)
+    await categoriesService.deactivate(id)
+
     await loadCategories()
+
     alert('Categoría desactivada correctamente.')
   } catch (error: any) {
     console.error('Error al desactivar categoría:', error)
+
     errorMessage.value =
-      error.response?.data?.mensaje || 'No fue posible desactivar la categoría.'
+      error.response?.data?.mensaje ||
+      error.message ||
+      'No fue posible desactivar la categoría.'
   }
 }
 
@@ -178,7 +184,10 @@ onMounted(loadCategories)
               v-for="category in filteredCategories"
               :key="category.id"
             >
-              <td><strong>{{ category.name }}</strong></td>
+              <td>
+                <strong>{{ category.name }}</strong>
+              </td>
+
               <td>{{ category.description || '—' }}</td>
 
               <td>

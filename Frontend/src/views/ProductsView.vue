@@ -1,21 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api } from '../services/api'
+import { productsService } from '../services/products.service'
+import { categoriesService } from '../services/categories.service'
+import type { Product as ProductModel } from '../stores/products'
+import type { Category } from '../services/categories.service'
 
-interface Product {
-  id: number
-  category_id: number
-  name: string
-  description: string
-  category: string
-  price: number | string
-  available: boolean
-}
-
-interface Category {
-  id: number
-  name: string
-  active: boolean
+interface Product extends ProductModel {
+  category_id?: number
+  description?: string
 }
 
 const products = ref<Product[]>([])
@@ -26,6 +18,8 @@ const selectedCategory = ref('Todas')
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
 const isLoading = ref(false)
+const isSaving = ref(false)
+const isOffline = ref(!navigator.onLine)
 
 const form = ref({
   name: '',
@@ -60,21 +54,25 @@ function formatCurrency(value: number | string) {
   }).format(Number(value))
 }
 
+function updateConnection() {
+  isOffline.value = !navigator.onLine
+}
+
 async function loadProducts() {
   isLoading.value = true
 
   try {
-    const [productsResponse, categoriesResponse] = await Promise.all([
-      api.get<Product[]>('/products'),
-      api.get<Category[]>('/categories'),
+    const [loadedProducts, loadedCategories] = await Promise.all([
+      productsService.getAll(),
+      categoriesService.getAll(),
     ])
 
-    products.value = productsResponse.data.map((product) => ({
+    products.value = loadedProducts.map((product) => ({
       ...product,
       price: Number(product.price),
     }))
 
-    categories.value = categoriesResponse.data.filter(
+    categories.value = loadedCategories.filter(
       (category) => category.active,
     )
 
@@ -96,16 +94,16 @@ async function loadProducts() {
 function openCreateForm() {
   editingId.value = null
 
+  if (categories.value.length === 0) {
+    alert('Primero debes registrar una categoría.')
+    return
+  }
+
   form.value = {
     name: '',
     category: categories.value[0]?.name || '',
     price: 0,
     available: true,
-  }
-
-  if (categories.value.length === 0) {
-    alert('Primero debes registrar una categoría.')
-    return
   }
 
   showForm.value = true
@@ -140,20 +138,28 @@ async function saveProduct() {
     available: form.value.available,
   }
 
+  isSaving.value = true
+
   try {
     if (editingId.value !== null) {
-      await api.put(`/products/${editingId.value}`, data)
+      await productsService.update(editingId.value, data)
     } else {
-      await api.post('/products', data)
+      await productsService.create(data)
     }
 
     showForm.value = false
     await loadProducts()
 
-    alert('Producto guardado correctamente.')
+    alert(
+      isOffline.value
+        ? 'Producto guardado localmente. Se sincronizará cuando regrese la conexión.'
+        : 'Producto guardado correctamente.',
+    )
   } catch (error: any) {
     console.error('Error al guardar producto:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo guardar el producto.')
+    alert(error.response?.data?.mensaje || error.message || 'No se pudo guardar el producto.')
+  } finally {
+    isSaving.value = false
   }
 }
 
@@ -165,16 +171,25 @@ async function deleteProduct(id: number) {
   if (!confirmed) return
 
   try {
-    await api.delete(`/products/${id}`)
+    await productsService.delete(id)
     await loadProducts()
-    alert('Producto desactivado correctamente.')
+
+    alert(
+      isOffline.value
+        ? 'Producto eliminado localmente. Se sincronizará cuando regrese la conexión.'
+        : 'Producto desactivado correctamente.',
+    )
   } catch (error: any) {
     console.error('Error al eliminar producto:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo desactivar el producto.')
+    alert(error.response?.data?.mensaje || error.message || 'No se pudo desactivar el producto.')
   }
 }
 
-onMounted(loadProducts)
+onMounted(() => {
+  window.addEventListener('online', updateConnection)
+  window.addEventListener('offline', updateConnection)
+  loadProducts()
+})
 </script>
 
 <template>
@@ -188,6 +203,10 @@ onMounted(loadProducts)
       <button class="primary-button" @click="openCreateForm">
         + Nuevo producto
       </button>
+    </div>
+
+    <div class="connection-status" :class="{ offline: isOffline }">
+      {{ isOffline ? 'Sin conexión · Datos locales' : 'Conectado' }}
     </div>
 
     <div class="stats-grid products-summary">
@@ -361,15 +380,37 @@ onMounted(loadProducts)
             Cancelar
           </button>
 
-          <button type="submit" class="primary-button">
-            Guardar producto
+          <button
+            type="submit"
+            class="primary-button"
+            :disabled="isSaving"
+          >
+            {{ isSaving ? 'Guardando...' : 'Guardar producto' }}
           </button>
         </div>
       </form>
     </div>
 
     <p class="demo-notice">
-      Los productos se consultan y almacenan directamente en PostgreSQL.
+      Los productos se almacenan localmente y se sincronizan con PostgreSQL cuando hay conexión.
     </p>
   </div>
 </template>
+
+<style scoped>
+.connection-status {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 7px 12px;
+  border-radius: 20px;
+  background: #e8f5ed;
+  color: #267044;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.connection-status.offline {
+  background: #fff2df;
+  color: #9a641d;
+}
+</style>

@@ -1,4 +1,3 @@
-
 import { api } from './api'
 import type { Order, OrderItem } from '../stores/orders'
 import { getLocalData, saveLocalData } from '../offline/db'
@@ -36,8 +35,11 @@ export const ordersService = {
   },
 
   async create(tableId: number, items: OrderItem[]): Promise<Order> {
+    const operationId = crypto.randomUUID()
+
     const data = {
       tableId,
+      localId: operationId,
       items: items.map(item => ({
         productId: item.productId,
         quantity: item.quantity
@@ -73,15 +75,15 @@ export const ordersService = {
       localOrder as unknown as Record<string, unknown> & { id: number }
     )
 
-    await addOperation({
-      operationId: crypto.randomUUID(),
-      type: 'CREATE',
-      entity: 'orders',
-      data: {
-        ...data,
-        localId: localOrder.id
-      }
-    })
+await addOperation({
+  operationId,
+  type: 'CREATE',
+  entity: 'orders',
+  data: {
+    ...data,
+    localOrderId: localOrder.id
+  }
+})
 
     return localOrder
   },

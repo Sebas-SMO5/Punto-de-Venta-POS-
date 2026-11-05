@@ -1,4 +1,3 @@
-
 const pool = require('../config/database')
 
 async function getAll() {
@@ -136,7 +135,11 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
     )
 
     if (existingSale.rows.length > 0) {
-      throw new Error('Este pedido ya tiene una venta registrada')
+      const existingSaleId = existingSale.rows[0].id
+
+      await client.query('COMMIT')
+
+      return await getById(existingSaleId)
     }
 
     const methodResult = await client.query(`

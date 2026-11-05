@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../services/api'
+import { getLocalData, saveLocalData } from '../offline/db'
+import { addOperation } from '../offline/queue'
 
 interface OrderItem {
   id: number
@@ -34,7 +36,11 @@ const tables = ref<RestaurantTable[]>([])
 const isLoading = ref(false)
 
 const occupiedCount = computed(
-  () => tables.value.filter(table => table.orders.length > 0).length
+  () => tables.value.filter(table =>
+    table.orders.some(order =>
+      !['completed', 'cancelled'].includes(order.status)
+    )
+  ).length
 )
 
 const availableCount = computed(
@@ -61,38 +67,80 @@ function statusLabel(status: string) {
   return labels[status] || status
 }
 
+function normalizeTables(data: RestaurantTable[]): RestaurantTable[] {
+  return data.map(table => ({
+    ...table,
+    orders: (table.orders || []).map(order => ({
+      ...order,
+      total: Number(order.total),
+      items: (order.items || []).map(item => ({
+        ...item,
+        quantity: Number(item.quantity),
+        price: Number(item.price),
+        subtotal: Number(item.subtotal)
+      }))
+    }))
+  }))
+}
+
 async function loadTables() {
   isLoading.value = true
 
   try {
-    const response = await api.get<RestaurantTable[]>('/tables')
+    if (navigator.onLine) {
+      try {
+        const response = await api.get<RestaurantTable[]>('/tables')
 
-    tables.value = response.data.map(table => ({
-      ...table,
-      orders: (table.orders || []).map(order => ({
-        ...order,
-        total: Number(order.total),
-        items: (order.items || []).map(item => ({
-          ...item,
-          quantity: Number(item.quantity),
-          price: Number(item.price),
-          subtotal: Number(item.subtotal)
-        }))
-      }))
-    }))
+        tables.value = normalizeTables(response.data)
+
+        for (const table of tables.value) {
+          await saveLocalData(
+            'tables',
+            table as unknown as Record<string, unknown> & { id: number }
+          )
+        }
+
+        return
+      } catch (error) {
+        console.error('No se pudieron consultar las mesas en el servidor:', error)
+      }
+    }
+
+    const localTables = await getLocalData('tables')
+
+    tables.value = normalizeTables(
+      localTables as unknown as RestaurantTable[]
+    )
   } catch (error) {
-    console.error('Error al cargar mesas:', error)
-    alert('No se pudieron cargar las mesas.')
+    console.error('Error al cargar las mesas:', error)
+    tables.value = []
+    alert('No se pudieron cargar las mesas guardadas en el dispositivo.')
   } finally {
     isLoading.value = false
   }
 }
 
 function tableTotal(table: RestaurantTable) {
-  return table.orders.reduce(
-    (sum, order) => sum + Number(order.total),
-    0
-  )
+  return table.orders
+    .filter(order => !['cancelled'].includes(order.status))
+    .reduce((sum, order) => sum + Number(order.total), 0)
+}
+
+async function updateLocalOrder(orderId: number, status: string) {
+  for (const table of tables.value) {
+    const order = table.orders.find(item => item.id === orderId)
+
+    if (order) {
+      order.status = status
+
+      await saveLocalData(
+        'tables',
+        table as unknown as Record<string, unknown> & { id: number }
+      )
+
+      return
+    }
+  }
 }
 
 async function completeOrder(orderId: number) {
@@ -103,15 +151,42 @@ async function completeOrder(orderId: number) {
   if (!confirmed) return
 
   try {
-    await api.patch(`/orders/${orderId}/status`, {
-      status: 'completed'
-    })
+    if (navigator.onLine && orderId > 0) {
+      try {
+        await api.patch(`/orders/${orderId}/status`, {
+          status: 'completed'
+        })
 
-    await loadTables()
-    alert('Pedido entregado correctamente.')
-  } catch (error: any) {
-    console.error('Error al entregar pedido:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo entregar el pedido.')
+        await loadTables()
+        alert('Pedido entregado correctamente.')
+        return
+      } catch (error) {
+        console.error('No se pudo actualizar el pedido en el servidor:', error)
+
+        if (navigator.onLine) {
+          alert('No se pudo actualizar el pedido. Intenta nuevamente.')
+          return
+        }
+      }
+    }
+
+    if (orderId > 0) {
+      await addOperation({
+        operationId: crypto.randomUUID(),
+        type: 'UPDATE',
+        entity: 'orders',
+        data: {
+          id: orderId,
+          status: 'completed'
+        }
+      })
+    }
+
+    await updateLocalOrder(orderId, 'completed')
+    alert('Pedido actualizado localmente. Se sincronizará cuando vuelva la conexión.')
+  } catch (error) {
+    console.error('Error al entregar el pedido:', error)
+    alert('No se pudo actualizar el pedido.')
   }
 }
 
@@ -123,12 +198,38 @@ async function cancelOrder(orderId: number) {
   if (!confirmed) return
 
   try {
-    await api.delete(`/orders/${orderId}`)
-    await loadTables()
-    alert('Pedido cancelado correctamente.')
-  } catch (error: any) {
-    console.error('Error al cancelar pedido:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo cancelar el pedido.')
+    if (navigator.onLine && orderId > 0) {
+      try {
+        await api.delete(`/orders/${orderId}`)
+        await loadTables()
+        alert('Pedido cancelado correctamente.')
+        return
+      } catch (error) {
+        console.error('No se pudo cancelar el pedido en el servidor:', error)
+
+        if (navigator.onLine) {
+          alert('No se pudo cancelar el pedido. Intenta nuevamente.')
+          return
+        }
+      }
+    }
+
+    if (orderId > 0) {
+      await addOperation({
+        operationId: crypto.randomUUID(),
+        type: 'DELETE',
+        entity: 'orders',
+        data: {
+          id: orderId
+        }
+      })
+    }
+
+    await updateLocalOrder(orderId, 'cancelled')
+    alert('Pedido cancelado localmente. Se sincronizará cuando vuelva la conexión.')
+  } catch (error) {
+    console.error('Error al cancelar el pedido:', error)
+    alert('No se pudo cancelar el pedido.')
   }
 }
 
@@ -178,14 +279,24 @@ onMounted(loadTables)
           v-for="table in tables"
           :key="table.id"
           class="table-card"
-          :class="{ occupied: table.orders.length > 0 }"
+          :class="{
+            occupied: table.orders.some(order =>
+              !['completed', 'cancelled'].includes(order.status)
+            )
+          }"
         >
           <span class="table-symbol">▦</span>
 
           <strong>Mesa {{ table.table_number }}</strong>
 
           <small>
-            {{ table.orders.length > 0 ? 'Ocupada' : 'Disponible' }}
+            {{
+              table.orders.some(order =>
+                !['completed', 'cancelled'].includes(order.status)
+              )
+                ? 'Ocupada'
+                : 'Disponible'
+            }}
           </small>
 
           <template v-if="table.orders.length > 0">
@@ -252,13 +363,14 @@ onMounted(loadTables)
         </article>
 
         <p v-if="tables.length === 0" class="empty-state">
-          No hay mesas registradas.
+          No hay mesas guardadas en el dispositivo.
+          Conéctate para cargar las mesas por primera vez.
         </p>
       </div>
     </section>
 
     <p class="demo-notice">
-      Las mesas y sus pedidos se consultan directamente desde PostgreSQL.
+      Las mesas se guardan localmente y se consultan desde el servidor cuando hay conexión.
     </p>
   </div>
 </template>

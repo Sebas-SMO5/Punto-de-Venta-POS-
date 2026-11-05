@@ -1,4 +1,3 @@
-
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 
 export interface PendingOperation {
@@ -34,6 +33,10 @@ interface POSDatabase extends DBSchema {
     key: number
     value: Record<string, unknown> & { id: number }
   }
+  inventory: {
+    key: number
+    value: Record<string, unknown> & { id: number }
+  }
   syncQueue: {
     key: number
     value: PendingOperation
@@ -44,26 +47,57 @@ interface POSDatabase extends DBSchema {
   }
 }
 
+type DataStore =
+  | 'products'
+  | 'categories'
+  | 'tables'
+  | 'orders'
+  | 'sales'
+  | 'inventory'
+
 let database: Promise<IDBPDatabase<POSDatabase>> | null = null
 
 export const getDatabase = () => {
   if (!database) {
-    database = openDB<POSDatabase>('restaurante-pos', 1, {
+    database = openDB<POSDatabase>('restaurante-pos', 2, {
       upgrade(db) {
-        db.createObjectStore('products', { keyPath: 'id' })
-        db.createObjectStore('categories', { keyPath: 'id' })
-        db.createObjectStore('tables', { keyPath: 'id' })
-        db.createObjectStore('orders', { keyPath: 'id' })
-        db.createObjectStore('sales', { keyPath: 'id' })
+        if (!db.objectStoreNames.contains('products')) {
+          db.createObjectStore('products', { keyPath: 'id' })
+        }
 
-        const queue = db.createObjectStore('syncQueue', {
-          keyPath: 'id',
-          autoIncrement: true
-        })
+        if (!db.objectStoreNames.contains('categories')) {
+          db.createObjectStore('categories', { keyPath: 'id' })
+        }
 
-        queue.createIndex('by-status', 'status')
-        queue.createIndex('by-date', 'createdAt')
+        if (!db.objectStoreNames.contains('tables')) {
+          db.createObjectStore('tables', { keyPath: 'id' })
+        }
+
+        if (!db.objectStoreNames.contains('orders')) {
+          db.createObjectStore('orders', { keyPath: 'id' })
+        }
+
+        if (!db.objectStoreNames.contains('sales')) {
+          db.createObjectStore('sales', { keyPath: 'id' })
+        }
+
+        if (!db.objectStoreNames.contains('inventory')) {
+          db.createObjectStore('inventory', { keyPath: 'id' })
+        }
+
+        if (!db.objectStoreNames.contains('syncQueue')) {
+          const queue = db.createObjectStore('syncQueue', {
+            keyPath: 'id',
+            autoIncrement: true
+          })
+
+          queue.createIndex('by-status', 'status')
+          queue.createIndex('by-date', 'createdAt')
+        }
       }
+    }).catch(error => {
+      database = null
+      throw error
     })
   }
 
@@ -71,44 +105,41 @@ export const getDatabase = () => {
 }
 
 export const saveLocalData = async (
-  store: 'products' | 'categories' | 'tables' | 'orders' | 'sales',
+  store: DataStore,
   data: Record<string, unknown> & { id: number }
-) => {
+): Promise<void> => {
   const db = await getDatabase()
   await db.put(store, data)
 }
 
 export const saveManyLocalData = async (
-  store: 'products' | 'categories' | 'tables' | 'orders' | 'sales',
+  store: DataStore,
   data: (Record<string, unknown> & { id: number })[]
-) => {
+): Promise<void> => {
   const db = await getDatabase()
   const transaction = db.transaction(store, 'readwrite')
 
-  await Promise.all([
-    ...data.map(item => transaction.store.put(item)),
-    transaction.done
-  ])
+  for (const item of data) {
+    await transaction.store.put(item)
+  }
+
+  await transaction.done
 }
 
-export const getLocalData = async (
-  store: 'products' | 'categories' | 'tables' | 'orders' | 'sales'
-) => {
+export const getLocalData = async (store: DataStore) => {
   const db = await getDatabase()
   return db.getAll(store)
 }
 
 export const deleteLocalData = async (
-  store: 'products' | 'categories' | 'tables' | 'orders' | 'sales',
+  store: DataStore,
   id: number
-) => {
+): Promise<void> => {
   const db = await getDatabase()
   await db.delete(store, id)
 }
 
-export const clearLocalData = async (
-  store: 'products' | 'categories' | 'tables' | 'orders' | 'sales'
-) => {
+export const clearLocalData = async (store: DataStore): Promise<void> => {
   const db = await getDatabase()
   await db.clear(store)
 }
