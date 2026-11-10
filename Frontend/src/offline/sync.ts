@@ -242,86 +242,55 @@ const sendCategoryOperation = async (
   }
 }
 
-const updatePendingSalesWithRealOrderId = async (
-  localOrderId: number,
-  realOrderId: number
-): Promise<void> => {
-  const operations = await getPendingOperations()
-
-  for (const pendingOperation of operations) {
-    if (
-      pendingOperation.entity === 'sales' &&
-      pendingOperation.type === 'CREATE' &&
-      pendingOperation.id !== undefined
-    ) {
-      const data = { ...pendingOperation.data }
-
-      const relatedToLocalOrder =
-        Number(data.localOrderId) === localOrderId ||
-        Number(data.orderId) === localOrderId
-
-      if (relatedToLocalOrder) {
-        data.orderId = realOrderId
-        delete data.localOrderId
-
-        await updateOperation(pendingOperation.id, {
-          data
-        })
-      }
-    }
-  }
-}
-
 const sendOrderOperation = async (
   operation: PendingOperation
 ): Promise<void> => {
-  if (operation.type !== 'CREATE') {
-    throw new Error('Esta operación de pedido todavía no está implementada')
-  }
-
   const endpoint = getEndpoint('orders')
   const data = { ...operation.data }
-  const localOrderId = Number(data.localOrderId)
 
-  delete data.localOrderId
+  if (operation.type === 'CREATE') {
+    const localOrderId = data.localOrderId
+    delete data.localOrderId
+    data.localId = operation.operationId
 
-  data.localId = operation.operationId
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(data)
-  })
-
-  const result = await readResponse(response)
-
-  if (!response.ok) {
-    throw new Error(
-      result?.mensaje || `Error ${response.status} al sincronizar el pedido`
-    )
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    })
+    const result = await readResponse(response)
+    if (!response.ok) throw new Error(result?.mensaje || `Error ${response.status} al sincronizar el pedido`)
+    const order = result?.order || result
+    if (!order || typeof order.id !== 'number') throw new Error('El servidor no devolvió el pedido creado')
+    if (typeof localOrderId === 'number') await deleteLocalData('orders', localOrderId)
+    await saveLocalData('orders', order as Record<string, unknown> & { id: number })
+    return
   }
 
-  const order = result?.order || result
+  const id = Number(data.id)
+  if (!Number.isInteger(id) || id <= 0) throw new Error('No se puede sincronizar el estado de un pedido sin identificador del servidor')
 
-  if (!order || typeof order.id !== 'number') {
-    throw new Error('El servidor no devolvió el pedido creado')
+  if (operation.type === 'UPDATE') {
+    const response = await fetch(`${endpoint}/${id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: data.status })
+    })
+    const result = await readResponse(response)
+    if (!response.ok) throw new Error(result?.mensaje || `Error ${response.status} al actualizar el pedido`)
+    const order = result?.order || result
+    if (order && typeof order.id === 'number') await saveLocalData('orders', order as Record<string, unknown> & { id: number })
+    return
   }
 
-  if (Number.isInteger(localOrderId) && localOrderId < 0) {
-    await deleteLocalData('orders', localOrderId)
-
-    await updatePendingSalesWithRealOrderId(
-      localOrderId,
-      order.id
-    )
+  if (operation.type === 'DELETE') {
+    const response = await fetch(`${endpoint}/${id}`, { method: 'DELETE' })
+    const result = await readResponse(response)
+    if (!response.ok) throw new Error(result?.mensaje || `Error ${response.status} al cancelar el pedido`)
+    const order = result?.order
+    if (order && typeof order.id === 'number') await saveLocalData('orders', order as Record<string, unknown> & { id: number })
+    return
   }
-
-  await saveLocalData(
-    'orders',
-    order as Record<string, unknown> & { id: number }
-  )
 }
 
 const sendSaleOperation = async (
@@ -352,7 +321,6 @@ const sendSaleOperation = async (
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      localId: operation.operationId,
       orderId,
       paymentMethodId,
       reference: data.reference ?? null

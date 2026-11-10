@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
   inventoryService,
   type InventoryItem
@@ -21,8 +21,12 @@ const lowStockCount = computed(() =>
   inventory.value.filter(item => item.stock <= item.minimum).length
 )
 
+const totalStock = computed(() =>
+  inventory.value.reduce((sum, item) => sum + Number(item.stock || 0), 0)
+)
+
 function formatNumber(value: number) {
-  return new Intl.NumberFormat('es-CO').format(Number(value))
+  return new Intl.NumberFormat('es-CO').format(Number(value || 0))
 }
 
 async function loadInventory() {
@@ -50,9 +54,13 @@ function handleConnectionChange() {
 
 onMounted(() => {
   loadInventory()
-
   window.addEventListener('online', handleConnectionChange)
   window.addEventListener('offline', handleConnectionChange)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('online', handleConnectionChange)
+  window.removeEventListener('offline', handleConnectionChange)
 })
 </script>
 
@@ -82,9 +90,7 @@ onMounted(() => {
 
       <article class="stat-card">
         <p class="stat-label">Existencias registradas</p>
-        <h3>
-          {{ formatNumber(inventory.reduce((sum, item) => sum + item.stock, 0)) }}
-        </h3>
+        <h3>{{ formatNumber(totalStock) }}</h3>
       </article>
     </div>
 

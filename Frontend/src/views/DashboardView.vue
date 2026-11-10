@@ -1,84 +1,124 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { api } from '../services/api'
 import { useProductsStore } from '../stores/products'
 import { useOrdersStore } from '../stores/orders'
-import { salesService, type Sale } from '../services/sales.service'
 import StatCard from '../components/StatCard.vue'
 
 const productsStore = useProductsStore()
 const ordersStore = useOrdersStore()
 
-const sales = ref<Sale[]>([])
-const isLoading = ref(true)
-const isOffline = ref(!navigator.onLine)
+const tableData = ref<{ number: number; occupied: boolean }[]>([])
+const dashboardOrders = ref<any[]>([])
+
+onMounted(async () => {
+  try {
+    await productsStore.loadProducts()
+  } catch (error) {
+    console.error('Error al cargar productos:', error)
+  }
+
+  try {
+    const [ordersResponse, tablesResponse] = await Promise.all([
+      api.get<any[]>('/orders'),
+      api.get<any[]>('/tables')
+    ])
+
+    dashboardOrders.value = (ordersResponse.data || []).map(order => ({
+      id: order.id,
+      tableNumber: Number(order.table_number || order.tableNumber || order.table_id || 0),
+      total: Number(order.total || 0),
+      status: ({
+        pending: 'Pendiente',
+        preparing: 'En preparación',
+        ready: 'Listo',
+        completed: 'Entregado',
+        cancelled: 'Cancelado'
+      } as Record<string, string>)[order.status] || order.status,
+      createdAt: order.created_at || order.createdAt,
+      items: Array.isArray(order.items) ? order.items : []
+    }))
+
+    tableData.value = (tablesResponse.data || []).map(table => ({
+      number: Number(table.table_number || table.number),
+      occupied: Array.isArray(table.orders)
+        ? table.orders.some((order: any) =>
+            !['completed', 'cancelled', 'Entregado', 'Cancelado'].includes(order.status)
+          )
+        : Boolean(table.occupied)
+    }))
+  } catch (error) {
+    console.error('Error al cargar el dashboard:', error)
+  }
+})
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat('es-CO', {
     style: 'currency',
     currency: 'COP',
-    maximumFractionDigits: 0,
+    maximumFractionDigits: 0
   }).format(value)
 }
 
-const activeOrders = computed(() =>
-  ordersStore.orders.filter(
-    order =>
-      order.status !== 'Entregado' &&
-      order.status !== 'Cancelado',
-  ),
+const allOrders = computed(() =>
+  dashboardOrders.value.length > 0
+    ? dashboardOrders.value
+    : ordersStore.orders
 )
 
-const occupiedTables = computed(() => {
-  const tableNumbers = new Set(
-    activeOrders.value.map(order => order.tableNumber),
+const activeOrders = computed(() =>
+  allOrders.value.filter(order =>
+    !['Entregado', 'Cancelado', 'completed', 'cancelled'].includes(order.status)
   )
+)
 
-  return tableNumbers.size
-})
+const occupiedTables = computed(() =>
+  tableData.value.length
+    ? tableData.value.filter(table => table.occupied).length
+    : new Set(activeOrders.value.map(order => order.tableNumber)).size
+)
 
 const availableProducts = computed(() =>
-  productsStore.products.filter(product => product.available).length,
+  productsStore.products.filter(product => product.available).length
 )
 
 const todaySales = computed(() => {
   const today = new Date().toDateString()
 
-  return sales.value
-    .filter(
-      sale =>
-        sale.status === 'completed' &&
-        new Date(sale.created_at).toDateString() === today,
+  return allOrders.value
+    .filter(order =>
+      ['Entregado', 'completed'].includes(order.status) &&
+      order.createdAt &&
+      new Date(order.createdAt).toDateString() === today
     )
-    .reduce((total, sale) => total + Number(sale.total || 0), 0)
+    .reduce((total, order) => total + Number(order.total || 0), 0)
 })
 
 const recentOrders = computed(() =>
-  [...ordersStore.orders]
-    .sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() -
-        new Date(a.createdAt).getTime(),
+  [...allOrders.value]
+    .sort((a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     )
-    .slice(0, 5),
+    .slice(0, 5)
 )
 
-function getItemsDescription(quantity: number): string {
-  return `${quantity} ${quantity === 1 ? 'producto' : 'productos'}`
-}
-
 const tables = computed(() =>
-  Array.from({ length: 8 }, (_, index) => {
-    const number = index + 1
+  tableData.value.length
+    ? tableData.value.map(table => ({
+        number: table.number,
+        status: table.occupied ? 'Ocupada' : 'Disponible'
+      }))
+    : Array.from({ length: 8 }, (_, index) => {
+        const number = index + 1
+        const occupied = activeOrders.value.some(
+          order => Number(order.tableNumber) === number
+        )
 
-    const occupied = activeOrders.value.some(
-      order => order.tableNumber === number,
-    )
-
-    return {
-      number,
-      status: occupied ? 'Ocupada' : 'Disponible',
-    }
-  }),
+        return {
+          number,
+          status: occupied ? 'Ocupada' : 'Disponible'
+        }
+      })
 )
 
 const stats = computed(() => [
@@ -86,68 +126,27 @@ const stats = computed(() => [
     label: 'Ventas del día',
     value: formatCurrency(todaySales.value),
     icon: '$',
-    note: 'Total de ventas completadas hoy',
+    note: 'Total de pedidos entregados hoy'
   },
   {
     label: 'Pedidos activos',
     value: String(activeOrders.value.length),
     icon: '≡',
-    note: 'Pedidos pendientes de finalizar',
+    note: 'Pedidos pendientes de finalizar'
   },
   {
     label: 'Mesas ocupadas',
     value: `${occupiedTables.value} / 8`,
     icon: '▦',
-    note: 'Mesas con pedidos activos',
+    note: 'Mesas con pedidos activos'
   },
   {
     label: 'Platos disponibles',
     value: String(availableProducts.value),
     icon: '◇',
-    note: 'Productos disponibles en el menú',
-  },
+    note: 'Productos disponibles en el menú'
+  }
 ])
-
-async function loadDashboard() {
-  isLoading.value = true
-
-  try {
-    await Promise.all([
-      productsStore.loadProducts(),
-      loadSales(),
-    ])
-  } catch (error) {
-    console.error('Error al cargar el Dashboard:', error)
-  } finally {
-    isLoading.value = false
-  }
-}
-
-async function loadSales() {
-  try {
-    sales.value = await salesService.getAll()
-  } catch (error) {
-    console.error('Error al cargar las ventas del Dashboard:', error)
-    sales.value = []
-  }
-}
-
-function handleConnectionChange() {
-  isOffline.value = !navigator.onLine
-  loadDashboard()
-}
-
-onMounted(() => {
-  loadDashboard()
-
-  window.addEventListener('online', handleConnectionChange)
-  window.addEventListener('offline', handleConnectionChange)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('online', handleConnectionChange)
-  window.removeEventListener('offline', handleConnectionChange)
-})
 </script>
 
 <template>
@@ -163,16 +162,12 @@ onUnmounted(() => {
       </RouterLink>
     </div>
 
-    <div v-if="isOffline" class="demo-notice">
-      Estás trabajando sin conexión. Se muestran los datos disponibles localmente.
-    </div>
-
     <div class="stats-grid">
       <StatCard
         v-for="stat in stats"
         :key="stat.label"
         :label="stat.label"
-        :value="isLoading ? '...' : stat.value"
+        :value="stat.value"
         :icon="stat.icon"
         :note="stat.note"
       />
@@ -205,29 +200,20 @@ onUnmounted(() => {
             <tbody>
               <tr v-for="order in recentOrders" :key="order.id">
                 <td>
-                  <strong>#PED-{{ String(order.id).padStart(3, '0') }}</strong>
-                  <small class="table-subtitle">
-                    {{ getItemsDescription(
-                      order.items.reduce(
-                        (sum, item) => sum + item.quantity,
-                        0,
-                      )
-                    ) }}
-                  </small>
+                  <strong>#PED-{{ String(order.id).padStart(6, '0') }}</strong>
                 </td>
 
                 <td>Mesa {{ order.tableNumber }}</td>
 
-                <td>{{ formatCurrency(order.total) }}</td>
+                <td>{{ formatCurrency(Number(order.total || 0)) }}</td>
 
                 <td>
                   <span
                     class="status-pill"
                     :class="{
-                      pending: order.status === 'Pendiente',
-                      preparing: order.status === 'En preparación',
-                      ready: order.status === 'Entregado',
-                      canceled: order.status === 'Cancelado',
+                      pending: ['Pendiente', 'En preparación'].includes(order.status),
+                      preparing: order.status === 'Listo',
+                      ready: order.status === 'Entregado'
                     }"
                   >
                     {{ order.status }}
@@ -271,5 +257,9 @@ onUnmounted(() => {
         </div>
       </section>
     </div>
+
+    <p class="demo-notice">
+      Información consultada desde el backend y el almacenamiento local disponible.
+    </p>
   </div>
 </template>

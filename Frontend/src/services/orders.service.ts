@@ -30,19 +30,39 @@ export const ordersService = {
   },
 
   async getById(id: number): Promise<Order> {
+    if (id < 0 || !navigator.onLine) {
+      const localOrders = await getLocalData('orders') as unknown as Order[]
+      const order = localOrders.find(item => item.id === id)
+
+      if (!order) {
+        throw new Error('No se encontró el pedido')
+      }
+
+      return order
+    }
+
     const response = await api.get<Order>(`/orders/${id}`)
     return response.data
   },
 
-  async create(tableId: number, items: OrderItem[]): Promise<Order> {
+  async create(
+    tableId: number,
+    items: OrderItem[],
+    notes = ''
+  ): Promise<Order> {
+    if (!tableId || items.length === 0) {
+      throw new Error('Selecciona una mesa y agrega productos al pedido')
+    }
+
     const operationId = crypto.randomUUID()
 
     const data = {
       tableId,
       localId: operationId,
+      notes,
       items: items.map(item => ({
-        productId: item.productId,
-        quantity: item.quantity
+        productId: Number(item.productId),
+        quantity: Number(item.quantity)
       }))
     }
 
@@ -57,7 +77,9 @@ export const ordersService = {
 
         return response.data
       } catch (error) {
-        if (navigator.onLine) throw error
+        if (navigator.onLine) {
+          throw error
+        }
       }
     }
 
@@ -65,7 +87,10 @@ export const ordersService = {
       id: -Date.now(),
       tableNumber: tableId,
       items,
-      total: items.reduce((sum, item) => sum + item.price * item.quantity, 0),
+      total: items.reduce(
+        (sum, item) => sum + Number(item.price) * Number(item.quantity),
+        0
+      ),
       status: 'Pendiente',
       createdAt: new Date().toISOString()
     }
@@ -88,16 +113,108 @@ export const ordersService = {
     return localOrder
   },
 
-  async updateStatus(id: number, status: Order['status']): Promise<Order> {
-    const response = await api.patch<Order>(`/orders/${id}/status`, {
-      status
-    })
+  async updateStatus(
+    id: number,
+    status: Order['status']
+  ): Promise<Order> {
+    const serverStatus = ({
+      'Pendiente': 'pending',
+      'En preparación': 'preparing',
+      'Listo': 'ready',
+      'Entregado': 'completed',
+      'Cancelado': 'cancelled'
+    } as Record<string, string>)[status]
 
-    return response.data
+    if (id > 0 && navigator.onLine) {
+      try {
+        const response = await api.patch<Order>(
+          `/orders/${id}/status`,
+          { status: serverStatus }
+        )
+
+        await saveLocalData(
+          'orders',
+          response.data as unknown as Record<string, unknown> & { id: number }
+        )
+
+        return response.data
+      } catch (error) {
+        if (navigator.onLine) {
+          throw error
+        }
+      }
+    }
+
+    const localOrders = await getLocalData('orders') as unknown as Order[]
+    const current = localOrders.find(order => order.id === id)
+
+    if (!current) {
+      throw new Error('No se encontró el pedido en el almacenamiento local')
+    }
+
+    const updated = { ...current, status }
+
+    await saveLocalData(
+      'orders',
+      updated as unknown as Record<string, unknown> & { id: number }
+    )
+
+    if (id > 0) {
+      await addOperation({
+        operationId: crypto.randomUUID(),
+        type: 'UPDATE',
+        entity: 'orders',
+        data: { id, status: serverStatus }
+      })
+    }
+
+    return updated
   },
 
   async cancel(id: number): Promise<Order> {
-    const response = await api.delete<{ order: Order }>(`/orders/${id}`)
-    return response.data.order
+    if (id > 0 && navigator.onLine) {
+      try {
+        const response = await api.delete<{ order: Order }>(`/orders/${id}`)
+
+        await saveLocalData(
+          'orders',
+          response.data.order as unknown as Record<string, unknown> & { id: number }
+        )
+
+        return response.data.order
+      } catch (error) {
+        if (navigator.onLine) {
+          throw error
+        }
+      }
+    }
+
+    const localOrders = await getLocalData('orders') as unknown as Order[]
+    const current = localOrders.find(order => order.id === id)
+
+    if (!current) {
+      throw new Error('No se encontró el pedido en el almacenamiento local')
+    }
+
+    const updated = {
+      ...current,
+      status: 'Cancelado' as const
+    }
+
+    await saveLocalData(
+      'orders',
+      updated as unknown as Record<string, unknown> & { id: number }
+    )
+
+    if (id > 0) {
+      await addOperation({
+        operationId: crypto.randomUUID(),
+        type: 'DELETE',
+        entity: 'orders',
+        data: { id }
+      })
+    }
+
+    return updated
   }
 }

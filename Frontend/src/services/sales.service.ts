@@ -34,30 +34,25 @@ export interface Sale {
   payments: SalePayment[]
 }
 
-function normalizeSale(sale: any): Sale {
+function normalizeSale(sale: Sale): Sale {
   return {
     ...sale,
     id: Number(sale.id),
-    sale_number: sale.sale_number ?? sale.saleNumber ?? sale.id,
-    created_at: sale.created_at ?? sale.createdAt ?? '',
     total: Number(sale.total || 0),
     subtotal: Number(sale.subtotal || 0),
     tax: Number(sale.tax || 0),
     discount: Number(sale.discount || 0),
-    status: sale.status || 'completed',
-    items: (sale.items || sale.sale_items || []).map((item: any) => ({
-      id: Number(item.id || item.product_id || 0),
-      name: item.name || item.product_name || item.product?.name || 'Producto',
-      quantity: Number(item.quantity || 0),
-      price: Number(item.price || item.unit_price || 0),
-      subtotal: Number(item.subtotal || item.total || 0)
+    items: (sale.items || []).map(item => ({
+      ...item,
+      id: Number(item.id),
+      quantity: Number(item.quantity),
+      price: Number(item.price),
+      subtotal: Number(item.subtotal)
     })),
-    payments: (sale.payments || []).map((payment: any) => ({
-      id: Number(payment.id || 0),
-      amount: Number(payment.amount || 0),
-      status: payment.status || '',
-      method: payment.method || payment.payment_method || payment.method_name || '',
-      reference: payment.reference || null
+    payments: (sale.payments || []).map(payment => ({
+      ...payment,
+      id: Number(payment.id),
+      amount: Number(payment.amount)
     }))
   }
 }
@@ -66,45 +61,29 @@ export const salesService = {
   async getAll(): Promise<Sale[]> {
     try {
       if (!navigator.onLine) {
-        const localSales = await getLocalData('sales')
-        return localSales.map(sale => normalizeSale(sale))
+        return await getLocalData('sales') as unknown as Sale[]
       }
 
-      const response = await api.get('/sales')
-      const responseData = response.data
+      const response = await api.get<Sale[]>('/sales')
 
-      const salesData = Array.isArray(responseData)
-        ? responseData
-        : responseData.ventas || responseData.sales || responseData.data || []
-
-      const sales = salesData.map((sale: any) => normalizeSale(sale))
+      const sales = response.data.map(normalizeSale)
 
       await saveManyLocalData(
         'sales',
         sales as unknown as (Record<string, unknown> & { id: number })[]
       )
 
-      const localSales = await getLocalData('sales')
-
-      const pendingSales = localSales
-        .filter(sale => (sale as any).pendingSync === true)
-        .map(sale => normalizeSale(sale))
-
-      const combinedSales = [...sales]
-
-      for (const pendingSale of pendingSales) {
-        if (!combinedSales.some(sale => sale.id === pendingSale.id)) {
-          combinedSales.push(pendingSale)
-        }
-      }
-
-      return combinedSales
+      return sales
     } catch (error) {
       console.error('Error al consultar las ventas:', error)
 
       const localSales = await getLocalData('sales')
 
-      return localSales.map(sale => normalizeSale(sale))
+      if (localSales.length > 0) {
+        return localSales as unknown as Sale[]
+      }
+
+      throw error
     }
   },
 
@@ -112,19 +91,18 @@ export const salesService = {
     try {
       if (!navigator.onLine) {
         const localSales = await getLocalData('sales')
-        const sale = localSales.find(item => Number(item.id) === id)
+        const sale = localSales.find(item => item.id === id)
 
         if (!sale) {
-          throw new Error('Esta venta no está guardada en el dispositivo.')
+          throw new Error('No existe información local de esta venta.')
         }
 
-        return normalizeSale(sale)
+        return normalizeSale(sale as unknown as Sale)
       }
 
       const response = await api.get(`/sales/${id}`)
-      const data = response.data.venta || response.data.sale || response.data
-
-      const sale = normalizeSale(data)
+      const data = response.data.venta || response.data
+      const sale = normalizeSale(data as Sale)
 
       await saveLocalData(
         'sales',
@@ -136,10 +114,10 @@ export const salesService = {
       console.error('Error al consultar el detalle de la venta:', error)
 
       const localSales = await getLocalData('sales')
-      const sale = localSales.find(item => Number(item.id) === id)
+      const sale = localSales.find(item => item.id === id)
 
       if (sale) {
-        return normalizeSale(sale)
+        return normalizeSale(sale as unknown as Sale)
       }
 
       throw error

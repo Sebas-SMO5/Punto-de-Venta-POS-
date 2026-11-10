@@ -1,337 +1,948 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { api } from '../services/api'
+import { ordersService } from '../services/orders.service'
 import { productsService } from '../services/products.service'
 import { tablesService, type RestaurantTable } from '../services/tables.service'
-import { ordersService } from '../services/orders.service'
-import type { Product } from '../stores/products'
-import type { OrderItem } from '../stores/orders'
+import { getLocalData, saveLocalData } from '../offline/db'
+import { addOperation } from '../offline/queue'
 
-interface CartItem extends OrderItem {
+interface OrderItem {
+  id: number
+  productId: number
+  name: string
+  quantity: number
+  price: number
   subtotal: number
 }
 
-const products = ref<Product[]>([])
-const tables = ref<RestaurantTable[]>([])
-const cart = ref<CartItem[]>([])
-const selectedTable = ref<number | null>(null)
-const search = ref('')
-const selectedCategory = ref('Todas')
+interface Order {
+  id: number
+  order_number: string
+  table_id: number
+  table_number: number | null
+  items: OrderItem[]
+  notes: string
+  total: number
+  status: string
+  created_at: string
+}
+
+interface Sale {
+  id: number
+  order_id: number
+  sale_number: string
+  created_at?: string
+  total?: number
+  status?: string
+  items?: OrderItem[]
+  payments?: {
+    id: number
+    amount: number
+    status: string
+    method: string
+    reference: string | null
+  }[]
+  pendingSync?: boolean
+}
+
+const orders = ref<Order[]>([])
+const sales = ref<Sale[]>([])
 const isLoading = ref(false)
-const isSaving = ref(false)
+const isRegistering = ref(false)
+const selectedOrder = ref<Order | null>(null)
+const selectedPaymentMethod = ref(1)
 const isOffline = ref(!navigator.onLine)
-const message = ref('')
-const errorMessage = ref('')
+const showOrderModal = ref(false)
+const isCreatingOrder = ref(false)
+const availableProducts = ref<any[]>([])
+const availableTables = ref<RestaurantTable[]>([])
+const selectedTableId = ref<number | null>(null)
+const orderNotes = ref('')
+const orderCart = ref<{ productId: number; name: string; price: number; quantity: number }[]>([])
 
-const categories = computed(() => [
-  'Todas',
-  ...new Set(products.value.map(product => product.category).filter(Boolean))
-])
+const paymentMethods = [
+  { id: 1, name: 'Efectivo' },
+  { id: 2, name: 'Tarjeta' },
+  { id: 3, name: 'Transferencia' },
+  { id: 4, name: 'Nequi' },
+  { id: 5, name: 'Daviplata' }
+]
 
-const filteredProducts = computed(() =>
-  products.value.filter(product => {
-    const matchesSearch = product.name.toLowerCase().includes(search.value.toLowerCase())
-    const matchesCategory = selectedCategory.value === 'Todas' || product.category === selectedCategory.value
-    return product.available && matchesSearch && matchesCategory
-  })
+const sortedOrders = computed(() =>
+  [...orders.value].sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() -
+      new Date(a.created_at).getTime()
+  )
 )
 
-const total = computed(() =>
-  cart.value.reduce((sum, item) => sum + item.subtotal, 0)
+const pendingCount = computed(() =>
+  orders.value.filter(order =>
+    ['pending', 'preparing', 'ready'].includes(order.status)
+  ).length
 )
 
-const itemCount = computed(() =>
-  cart.value.reduce((sum, item) => sum + item.quantity, 0)
+const completedCount = computed(() =>
+  orders.value.filter(order => order.status === 'completed').length
 )
 
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat('es-CO', {
-    style: 'currency',
-    currency: 'COP',
-    maximumFractionDigits: 0
-  }).format(value)
-}
+const newOrderTotal = computed(() =>
+  orderCart.value.reduce(
+    (total, item) => total + item.price * item.quantity,
+    0
+  )
+)
 
-function updateConnection() {
-  isOffline.value = !navigator.onLine
-}
-
-async function loadData() {
-  isLoading.value = true
-  errorMessage.value = ''
-
+async function openOrderModal() {
   try {
-    const [loadedProducts, loadedTables] = await Promise.all([
+    const [products, tables] = await Promise.all([
       productsService.getAll(),
       tablesService.getAll()
     ])
 
-    products.value = loadedProducts
-    tables.value = loadedTables.filter(table => table.active)
-    
-if (selectedTable.value === null && tables.value.length > 0) {
-  const firstTable = tables.value[0]
+    availableProducts.value = products.filter((product: any) =>
+      product.available !== false && product.active !== false
+    )
 
-  if (firstTable) {
-    selectedTable.value = firstTable.id
+    availableTables.value = tables.filter(table =>
+      table.active !== false
+    )
+
+    if (availableTables.value.length === 0) {
+      alert('No hay mesas activas disponibles.')
+      return
+    }
+
+    if (availableProducts.value.length === 0) {
+      alert('No hay productos disponibles para registrar el pedido.')
+      return
+    }
+
+const primeraMesa = availableTables.value[0]
+
+if (!primeraMesa) {
+  alert('No hay mesas disponibles para registrar el pedido.')
+  return
+}
+
+selectedTableId.value = primeraMesa.id
+
+    orderCart.value = []
+    orderNotes.value = ''
+    showOrderModal.value = true
+  } catch (error) {
+    console.error('Error al preparar el nuevo pedido:', error)
+    alert('No se pudieron cargar los productos o las mesas.')
   }
 }
 
-  } catch {
-    errorMessage.value = 'No fue posible cargar los productos y las mesas. Verifica que existan datos guardados para trabajar sin conexión.'
+function addProductToCart(product: any) {
+  const existing = orderCart.value.find(
+    item => item.productId === Number(product.id)
+  )
+
+  if (existing) {
+    existing.quantity += 1
+    return
+  }
+
+  orderCart.value.push({
+    productId: Number(product.id),
+    name: product.name,
+    price: Number(product.price),
+    quantity: 1
+  })
+}
+
+function changeCartQuantity(productId: number, amount: number) {
+  const item = orderCart.value.find(
+    product => product.productId === productId
+  )
+
+  if (!item) return
+
+  item.quantity += amount
+
+  if (item.quantity <= 0) {
+    orderCart.value = orderCart.value.filter(
+      product => product.productId !== productId
+    )
+  }
+}
+
+async function createNewOrder() {
+  if (!selectedTableId.value) {
+    alert('Selecciona una mesa.')
+    return
+  }
+
+  if (orderCart.value.length === 0) {
+    alert('Agrega al menos un producto al pedido.')
+    return
+  }
+
+  isCreatingOrder.value = true
+
+  try {
+    const tableId = selectedTableId.value
+    const table = availableTables.value.find(
+      item => Number(item.id) === Number(tableId)
+    )
+
+    const cartItems = orderCart.value.map(item => ({
+      ...item
+    }))
+
+    const total = newOrderTotal.value
+    const notes = orderNotes.value
+
+    const createdOrder = await ordersService.create(
+      tableId,
+      cartItems as any,
+      notes
+    )
+
+    const localId = Number(createdOrder.id)
+
+    const newOrder: Order = {
+      id: localId,
+      order_number:
+        (createdOrder as any).order_number ||
+        `PED-${String(Math.abs(localId)).padStart(6, '0')}`,
+      table_id: tableId,
+      table_number: table?.table_number ?? tableId,
+      items: cartItems.map((item, index) => ({
+        id: index + 1,
+        productId: item.productId,
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        subtotal: item.price * item.quantity
+      })),
+      notes,
+      total,
+      status: 'pending',
+      created_at: new Date().toISOString()
+    }
+
+    if (!orders.value.some(order => order.id === newOrder.id)) {
+      orders.value.unshift(newOrder)
+    }
+
+    showOrderModal.value = false
+    orderCart.value = []
+    orderNotes.value = ''
+
+    if (navigator.onLine) {
+      await loadOrders()
+    }
+
+    alert(
+      `Pedido registrado correctamente.\n\nPedido: ${newOrder.order_number}\nMesa: ${newOrder.table_number}\nTotal: ${formatCurrency(total)}`
+    )
+  } catch (error: any) {
+    console.error('Error al crear pedido:', error)
+    alert(
+      error.response?.data?.mensaje ||
+      error.response?.data?.message ||
+      error.message ||
+      'No se pudo registrar el pedido.'
+    )
+  } finally {
+    isCreatingOrder.value = false
+  }
+}
+
+function formatCurrency(value: number | string) {
+  return new Intl.NumberFormat('es-CO', {
+    style: 'currency',
+    currency: 'COP',
+    maximumFractionDigits: 0
+  }).format(Number(value))
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleString('es-CO')
+}
+
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    pending: 'Pendiente',
+    preparing: 'En preparación',
+    ready: 'Listo',
+    completed: 'Entregado',
+    cancelled: 'Cancelado',
+    pending_sync: 'Pendiente de sincronización'
+  }
+
+  return labels[status] || status
+}
+
+function hasSale(orderId: number) {
+  return sales.value.some(sale =>
+    Number(sale.order_id) === orderId
+  )
+}
+
+async function loadOrders() {
+  isLoading.value = true
+
+  try {
+    const response = await ordersService.getAll()
+
+    orders.value = response.map((order: any) => ({
+      id: Number(order.id),
+      order_number: order.order_number || `PED-${order.id}`,
+      table_id: Number(order.table_id ?? order.tableNumber ?? 0),
+      table_number: order.table_number ?? order.tableNumber ?? null,
+      items: (order.items || []).map((item: any) => ({
+        id: Number(item.id ?? item.productId ?? item.product_id ?? 0),
+        productId: Number(item.productId ?? item.product_id ?? 0),
+        name: item.name || item.product_name || 'Producto',
+        quantity: Number(item.quantity || 0),
+        price: Number(item.price ?? item.unit_price ?? 0),
+        subtotal: Number(
+          item.subtotal ??
+          (Number(item.price ?? item.unit_price ?? 0) *
+            Number(item.quantity || 0))
+        )
+      })),
+      notes: order.notes || '',
+      total: Number(order.total || 0),
+      status: ({
+        'Pendiente': 'pending',
+        'En preparación': 'preparing',
+        'Listo': 'ready',
+        'Entregado': 'completed',
+        'Cancelado': 'cancelled'
+      } as Record<string, string>)[order.status] || order.status,
+      created_at: order.created_at || order.createdAt || new Date().toISOString()
+    }))
+  } catch (error) {
+    console.error('Error al cargar pedidos:', error)
+    alert('No se pudieron cargar los pedidos.')
   } finally {
     isLoading.value = false
   }
 }
 
-function addToCart(product: Product) {
-  const existing = cart.value.find(item => item.productId === product.id)
+async function loadSales() {
+  try {
+    if (!navigator.onLine) {
+      sales.value = await getLocalData('sales') as unknown as Sale[]
+      return
+    }
 
-  if (existing) {
-    existing.quantity += 1
-    existing.subtotal = existing.price * existing.quantity
-    return
+    const response = await api.get<Sale[]>('/sales')
+    const serverSales = response.data
+
+    const localSales = await getLocalData('sales') as unknown as Sale[]
+
+    const pendingSales = localSales.filter(sale =>
+      sale.pendingSync === true
+    )
+
+    const combinedSales = [
+      ...serverSales,
+      ...pendingSales.filter(localSale =>
+        !serverSales.some(serverSale =>
+          Number(serverSale.order_id) === Number(localSale.order_id)
+        )
+      )
+    ]
+
+    sales.value = combinedSales
+
+    for (const sale of serverSales) {
+      await saveLocalData(
+        'sales',
+        sale as unknown as Record<string, unknown> & { id: number }
+      )
+    }
+  } catch (error) {
+    console.error('Error al cargar ventas:', error)
+    sales.value = await getLocalData('sales') as unknown as Sale[]
   }
-
-  cart.value.push({
-    productId: product.id,
-    name: product.name,
-    price: Number(product.price),
-    quantity: 1,
-    subtotal: Number(product.price)
-  })
 }
 
-function changeQuantity(item: CartItem, amount: number) {
-  item.quantity += amount
-
-  if (item.quantity <= 0) {
-    cart.value = cart.value.filter(cartItem => cartItem.productId !== item.productId)
+async function updateStatus(
+  id: number,
+  status: 'completed' | 'cancelled'
+) {
+  if (!navigator.onLine) {
+    alert('Necesitas conexión a internet para actualizar el estado del pedido.')
     return
   }
 
-  item.subtotal = item.price * item.quantity
-}
+  const message = status === 'completed'
+    ? '¿Marcar este pedido como entregado?'
+    : '¿Cancelar este pedido?'
 
-function clearCart() {
-  cart.value = []
-  message.value = ''
-}
-
-async function createOrder() {
-  if (selectedTable.value === null) {
-    errorMessage.value = 'Selecciona una mesa para continuar.'
-    return
-  }
-
-  if (!cart.value.length) {
-    errorMessage.value = 'Agrega al menos un producto al pedido.'
-    return
-  }
-
-  isSaving.value = true
-  errorMessage.value = ''
-  message.value = ''
+  if (!window.confirm(message)) return
 
   try {
-    const items: OrderItem[] = cart.value.map(item => ({
-      productId: item.productId,
-      name: item.name,
-      price: item.price,
-      quantity: item.quantity
-    }))
+    if (status === 'cancelled') {
+      await api.delete(`/orders/${id}`)
+    } else {
+      await api.patch(`/orders/${id}/status`, { status })
+    }
 
-    const order = await ordersService.create(selectedTable.value, items)
-
-    message.value = isOffline.value
-      ? `Pedido guardado localmente (pendiente de sincronización). Código local: ${order.id}`
-      : `Pedido ${order.id} registrado correctamente.`
-
-    cart.value = []
-  } catch (error) {
-    errorMessage.value = error instanceof Error
-      ? error.message
-      : 'No fue posible registrar el pedido.'
-  } finally {
-    isSaving.value = false
+    await loadOrders()
+    alert('Pedido actualizado correctamente.')
+  } catch (error: any) {
+    console.error('Error al actualizar pedido:', error)
+    alert(error.response?.data?.mensaje || 'No se pudo actualizar el pedido.')
   }
 }
 
-onMounted(() => {
-  window.addEventListener('online', updateConnection)
-  window.addEventListener('offline', updateConnection)
-  loadData()
+function openSaleModal(order: Order) {
+  if (hasSale(order.id)) {
+    alert('Este pedido ya tiene una venta registrada.')
+    return
+  }
+
+  selectedOrder.value = order
+  selectedPaymentMethod.value = 1
+}
+
+function closeSaleModal() {
+  if (isRegistering.value) return
+  selectedOrder.value = null
+}
+
+async function registerSale() {
+  if (!selectedOrder.value) return
+
+  const order = selectedOrder.value
+
+  if (hasSale(order.id)) {
+    alert('Este pedido ya tiene una venta registrada.')
+    selectedOrder.value = null
+    return
+  }
+
+  isRegistering.value = true
+
+  try {
+    if (navigator.onLine) {
+      const response = await api.post('/sales', {
+        orderId: order.id,
+        paymentMethodId: selectedPaymentMethod.value,
+        reference: null
+      })
+
+      const registeredSale = response.data.venta
+
+      alert(
+        `¡Venta registrada correctamente!\n\nVenta: ${registeredSale.sale_number}\nPedido: ${order.order_number}\nTotal: ${formatCurrency(order.total)}`
+      )
+
+      selectedOrder.value = null
+
+      await Promise.all([
+        loadOrders(),
+        loadSales()
+      ])
+
+      return
+    }
+
+    const operationId = crypto.randomUUID()
+    const localSaleId = -Date.now()
+
+    const paymentMethod = paymentMethods.find(
+      method => method.id === selectedPaymentMethod.value
+    )
+
+    const localSale: Sale = {
+      id: localSaleId,
+      order_id: order.id,
+      sale_number: `PEND-${Math.abs(localSaleId)}`,
+      created_at: new Date().toISOString(),
+      total: order.total,
+      status: 'pending_sync',
+      pendingSync: true,
+      items: order.items,
+      payments: [
+        {
+          id: localSaleId,
+          amount: order.total,
+          status: 'pending_sync',
+          method: paymentMethod?.name || 'No especificado',
+          reference: null
+        }
+      ]
+    }
+
+    await saveLocalData(
+      'sales',
+      localSale as unknown as Record<string, unknown> & { id: number }
+    )
+
+    await addOperation({
+      operationId,
+      type: 'CREATE',
+      entity: 'sales',
+      data: {
+        orderId: order.id,
+        paymentMethodId: selectedPaymentMethod.value,
+        reference: null,
+        localSaleId,
+        localOrderId: order.id
+      }
+    })
+
+    sales.value.push(localSale)
+    selectedOrder.value = null
+
+    alert(
+      `Venta guardada correctamente sin conexión.\n\nVenta: ${localSale.sale_number}\nPedido: ${order.order_number}\nTotal: ${formatCurrency(order.total)}\n\nSe sincronizará cuando vuelva internet.`
+    )
+  } catch (error: any) {
+    console.error('Error al registrar venta:', error)
+    alert(
+      error.response?.data?.mensaje ||
+      'No se pudo registrar la venta.'
+    )
+  } finally {
+    isRegistering.value = false
+  }
+}
+
+function handleConnectionChange() {
+  isOffline.value = !navigator.onLine
+
+  if (navigator.onLine) {
+    loadOrders()
+    loadSales()
+  }
+}
+
+onMounted(async () => {
+  await Promise.all([
+    loadOrders(),
+    loadSales()
+  ])
+
+  window.addEventListener('online', handleConnectionChange)
+  window.addEventListener('offline', handleConnectionChange)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('online', updateConnection)
-  window.removeEventListener('offline', updateConnection)
+  window.removeEventListener('online', handleConnectionChange)
+  window.removeEventListener('offline', handleConnectionChange)
 })
 </script>
 
 <template>
-  <section class="sales-page">
-    <header class="page-header">
+  <div class="products-page">
+    <div class="page-title-row">
       <div>
-        <h1>Punto de venta</h1>
-        <p>Selecciona los productos, arma el pedido y asígnalo a una mesa.</p>
+        <h2>Punto de venta</h2>
+        <p>Registra pedidos, consulta su estado y procesa los pagos.</p>
       </div>
 
-      <span class="connection-badge" :class="{ offline: isOffline }">
-        <span class="connection-dot"></span>
-        {{ isOffline ? 'Modo sin conexión' : 'Conectado' }}
-      </span>
-    </header>
+      <button class="primary-button" @click="openOrderModal">
+        + Nuevo pedido
+      </button>
+    </div>
 
-    <div v-if="message" class="feedback success">{{ message }}</div>
-    <div v-if="errorMessage" class="feedback error">{{ errorMessage }}</div>
+    <div v-if="isOffline" class="demo-notice">
+      Estás trabajando sin conexión. Los pedidos y las ventas nuevas se guardarán localmente.
+    </div>
 
-    <div class="sales-layout">
-      <main class="catalog-panel">
-        <div class="catalog-toolbar">
-          <input v-model="search" type="search" placeholder="Buscar producto..." />
+    <div class="stats-grid products-summary">
+      <article class="stat-card">
+        <p class="stat-label">Total de pedidos</p>
+        <h3>{{ orders.length }}</h3>
+      </article>
 
-          <select v-model="selectedCategory">
-            <option v-for="category in categories" :key="category" :value="category">
-              {{ category }}
-            </option>
-          </select>
-        </div>
+      <article class="stat-card">
+        <p class="stat-label">Pendientes o en preparación</p>
+        <h3>{{ pendingCount }}</h3>
+      </article>
 
-        <div v-if="isLoading" class="empty-state">
-          Cargando productos...
-        </div>
+      <article class="stat-card">
+        <p class="stat-label">Entregados</p>
+        <h3>{{ completedCount }}</h3>
+      </article>
+    </div>
 
-        <div v-else-if="!filteredProducts.length" class="empty-state">
-          No hay productos disponibles para mostrar.
-        </div>
+    <section class="panel">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Pedido</th>
+              <th>Mesa</th>
+              <th>Productos</th>
+              <th>Fecha</th>
+              <th>Total</th>
+              <th>Estado</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
 
-        <div v-else class="product-grid">
-          <button
-            v-for="product in filteredProducts"
-            :key="product.id"
-            class="product-option"
-            type="button"
-            @click="addToCart(product)"
-          >
-            <span class="product-category">
-              {{ product.category || 'Producto' }}
-            </span>
+          <tbody>
+            <tr v-if="isLoading">
+              <td colspan="7">Cargando pedidos...</td>
+            </tr>
 
-            <strong>{{ product.name }}</strong>
+            <tr v-for="order in sortedOrders" :key="order.id">
+              <td>
+                <strong>{{ order.order_number || order.id }}</strong>
+              </td>
 
-            <span class="product-price">
-              {{ formatCurrency(Number(product.price)) }}
-            </span>
+              <td>
+                {{ order.table_number ? `Mesa ${order.table_number}` : 'Sin mesa' }}
+              </td>
 
-            <span class="add-label">+ Agregar</span>
-          </button>
-        </div>
-      </main>
+              <td>
+                {{ order.items.reduce((sum, item) => sum + item.quantity, 0) }}
+                unidades
+              </td>
 
-      <aside class="cart-panel">
-        <div class="cart-heading">
-          <div>
-            <h2>Pedido actual</h2>
-            <p>
-              {{ itemCount }}
-              {{ itemCount === 1 ? 'producto' : 'productos' }}
-            </p>
-          </div>
+              <td>{{ formatDate(order.created_at) }}</td>
 
-          <button
-            class="clear-button"
-            type="button"
-            :disabled="!cart.length"
-            @click="clearCart"
-          >
-            Limpiar
-          </button>
-        </div>
+              <td>{{ formatCurrency(order.total) }}</td>
 
-        <label class="table-field">
+              <td>
+                <span
+                  class="status-pill"
+                  :class="{
+                    pending: order.status === 'pending' || order.status === 'cancelled',
+                    preparing: order.status === 'preparing',
+                    ready: order.status === 'ready' || order.status === 'completed'
+                  }"
+                >
+                  {{ statusLabel(order.status) }}
+                </span>
+              </td>
+
+              <td>
+                <div
+                  class="product-actions"
+                  v-if="!['completed', 'cancelled'].includes(order.status)"
+                >
+                  <button
+                    class="table-action"
+                    @click="updateStatus(order.id, 'completed')"
+                  >
+                    Entregar
+                  </button>
+
+                  <button
+                    class="table-action delete-action"
+                    @click="updateStatus(order.id, 'cancelled')"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+
+                <div v-else-if="order.status === 'completed'">
+                  <span
+                    v-if="hasSale(order.id)"
+                    class="status-pill ready"
+                  >
+                    {{ sales.find(sale => Number(sale.order_id) === order.id)?.pendingSync ? 'Pendiente de sincronización' : 'Vendido' }}
+                  </span>
+
+                  <button
+                    v-else
+                    class="table-action"
+                    @click="openSaleModal(order)"
+                  >
+                    Registrar venta
+                  </button>
+                </div>
+
+                <span v-else>—</span>
+              </td>
+            </tr>
+
+            <tr v-if="!isLoading && orders.length === 0">
+              <td colspan="7" class="empty-state">
+                Todavía no hay pedidos registrados.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div
+      v-if="showOrderModal"
+      class="sale-modal-overlay"
+      @click.self="!isCreatingOrder && (showOrderModal = false)"
+    >
+      <section class="panel sale-modal order-modal">
+        <h3>Registrar nuevo pedido</h3>
+
+        <label class="field-label" for="order-table">
           Mesa
-
-          <select v-model="selectedTable">
-            <option :value="null" disabled>
-              Selecciona una mesa
-            </option>
-
-            <option
-              v-for="table in tables"
-              :key="table.id"
-              :value="table.id"
-            >
-              Mesa {{ table.table_number }} · {{ table.capacity }} puestos
-            </option>
-          </select>
         </label>
 
-        <div v-if="!cart.length" class="cart-empty">
-          <span class="cart-empty-icon">＋</span>
-          <strong>Tu pedido está vacío</strong>
-          <p>Selecciona productos del catálogo para agregarlos.</p>
-        </div>
-
-        <div v-else class="cart-items">
-          <article
-            v-for="item in cart"
-            :key="item.productId"
-            class="cart-item"
+        <select
+          id="order-table"
+          v-model="selectedTableId"
+          class="search-input"
+          :disabled="isCreatingOrder"
+        >
+          <option
+            v-for="table in availableTables"
+            :key="table.id"
+            :value="table.id"
           >
-            <div class="cart-item-info">
+            Mesa {{ table.table_number }}
+          </option>
+        </select>
+
+        <label class="field-label" for="order-product">
+          Agregar producto
+        </label>
+
+        <select
+          id="order-product"
+          class="search-input"
+          :disabled="isCreatingOrder"
+          @change="(event: Event) => {
+            const select = event.target as HTMLSelectElement
+            const id = Number(select.value)
+            const product = availableProducts.find(item => Number(item.id) === id)
+            if (product) addProductToCart(product)
+            select.value = ''
+          }"
+        >
+          <option value="">Selecciona un producto</option>
+
+          <option
+            v-for="product in availableProducts"
+            :key="product.id"
+            :value="product.id"
+          >
+            {{ product.name }} - {{ formatCurrency(product.price) }}
+          </option>
+        </select>
+
+        <div v-if="orderCart.length" class="cart-list">
+          <div
+            v-for="item in orderCart"
+            :key="item.productId"
+            class="cart-row"
+          >
+            <div>
               <strong>{{ item.name }}</strong>
-              <span>{{ formatCurrency(item.price) }} c/u</span>
+              <small>{{ formatCurrency(item.price) }} c/u</small>
             </div>
 
-            <div class="quantity-control">
-              <button type="button" @click="changeQuantity(item, -1)">
+            <div class="cart-controls">
+              <button
+                type="button"
+                class="table-action"
+                :disabled="isCreatingOrder"
+                @click="changeCartQuantity(item.productId, -1)"
+              >
                 −
               </button>
 
-              <span>{{ item.quantity }}</span>
+              <strong>{{ item.quantity }}</strong>
 
-              <button type="button" @click="changeQuantity(item, 1)">
+              <button
+                type="button"
+                class="table-action"
+                :disabled="isCreatingOrder"
+                @click="changeCartQuantity(item.productId, 1)"
+              >
                 +
               </button>
             </div>
 
-            <strong class="item-subtotal">
-              {{ formatCurrency(item.subtotal) }}
+            <strong>
+              {{ formatCurrency(item.price * item.quantity) }}
             </strong>
-          </article>
+          </div>
         </div>
 
-        <div class="cart-summary">
-          <div>
-            <span>Subtotal</span>
-            <strong>{{ formatCurrency(total) }}</strong>
-          </div>
+        <p v-else class="empty-state">
+          Todavía no has agregado productos.
+        </p>
 
-          <div class="grand-total">
-            <span>Total</span>
-            <strong>{{ formatCurrency(total) }}</strong>
-          </div>
+        <label class="field-label" for="order-notes">
+          Observaciones (opcional)
+        </label>
+
+        <textarea
+          id="order-notes"
+          v-model="orderNotes"
+          class="search-input"
+          rows="2"
+          :disabled="isCreatingOrder"
+        ></textarea>
+
+        <div class="order-total">
+          Total: {{ formatCurrency(newOrderTotal) }}
+        </div>
+
+        <div class="product-actions sale-modal-actions">
+          <button
+            class="table-action"
+            :disabled="isCreatingOrder"
+            @click="showOrderModal = false"
+          >
+            Cancelar
+          </button>
 
           <button
-            class="submit-order"
-            type="button"
-            :disabled="isSaving || !cart.length || selectedTable === null"
-            @click="createOrder"
+            class="primary-button"
+            :disabled="isCreatingOrder || orderCart.length === 0"
+            @click="createNewOrder"
           >
-            {{
-              isSaving
-                ? 'Guardando pedido...'
-                : isOffline
-                  ? 'Guardar pedido sin conexión'
-                  : 'Crear pedido'
-            }}
+            {{ isCreatingOrder ? 'Registrando...' : 'Registrar pedido' }}
           </button>
         </div>
-      </aside>
+      </section>
     </div>
-  </section>
+
+    <div
+      v-if="selectedOrder"
+      class="sale-modal-overlay"
+      @click.self="closeSaleModal"
+    >
+      <section class="panel sale-modal">
+        <h3>Registrar venta</h3>
+
+        <p>
+          Pedido:
+          <strong>{{ selectedOrder.order_number }}</strong>
+        </p>
+
+        <p>
+          Total:
+          <strong>{{ formatCurrency(selectedOrder.total) }}</strong>
+        </p>
+
+        <label class="field-label" for="payment-method">
+          Medio de pago
+        </label>
+
+        <select
+          id="payment-method"
+          v-model="selectedPaymentMethod"
+          class="search-input"
+          :disabled="isRegistering"
+        >
+          <option
+            v-for="method in paymentMethods"
+            :key="method.id"
+            :value="method.id"
+          >
+            {{ method.name }}
+          </option>
+        </select>
+
+        <div class="product-actions sale-modal-actions">
+          <button
+            class="table-action"
+            :disabled="isRegistering"
+            @click="closeSaleModal"
+          >
+            Cancelar
+          </button>
+
+          <button
+            class="primary-button"
+            :disabled="isRegistering"
+            @click="registerSale"
+          >
+            {{ isRegistering ? 'Registrando...' : 'Confirmar pago' }}
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <p class="demo-notice">
+      Los pedidos y las ventas se almacenan localmente para permitir su consulta
+      y registro sin conexión.
+    </p>
+  </div>
 </template>
 
 <style scoped>
-.sales-page{display:flex;flex-direction:column;gap:22px;color:#26332d}.page-header{display:flex;justify-content:space-between;align-items:center;gap:16px}.page-header h1{margin:0;font-size:26px;font-weight:700}.page-header p{margin:7px 0 0;color:#7b827e;font-size:14px}.connection-badge{display:flex;align-items:center;gap:8px;padding:9px 13px;border-radius:20px;background:#e8f5ed;color:#267044;font-size:12px;font-weight:600;white-space:nowrap}.connection-badge.offline{background:#fff2df;color:#9a641d}.connection-dot{width:8px;height:8px;border-radius:50%;background:#35a866}.offline .connection-dot{background:#d99435}.feedback{padding:12px 15px;border-radius:9px;font-size:13px}.success{background:#e8f5ed;color:#267044}.error{background:#fff0ed;color:#b54735}.sales-layout{display:grid;grid-template-columns:minmax(0,1fr) 370px;gap:20px;align-items:start}.catalog-panel,.cart-panel{background:#fff;border:1px solid #e8eae7;border-radius:14px;padding:20px;box-shadow:0 2px 8px #26332d08}.catalog-toolbar{display:flex;gap:12px;margin-bottom:18px}.catalog-toolbar input,.catalog-toolbar select,.table-field select{height:42px;border:1px solid #e1e5e1;border-radius:8px;padding:0 12px;background:#fff;color:#26332d;outline:none}.catalog-toolbar input{flex:1;min-width:0}.catalog-toolbar select{width:180px}.product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px}.product-option{min-height:150px;text-align:left;display:flex;flex-direction:column;align-items:flex-start;gap:9px;padding:15px;border:1px solid #e7eae6;border-radius:11px;background:#fff;cursor:pointer;transition:.15s}.product-option:hover{border-color:#c96f4a;transform:translateY(-2px);box-shadow:0 5px 15px #26332d0d}.product-category{font-size:11px;color:#858d87}.product-option strong{font-size:14px}.product-price{font-weight:700;color:#26332d}.add-label{margin-top:auto;color:#c96f4a;font-size:12px;font-weight:700}.cart-panel{position:sticky;top:20px;display:flex;flex-direction:column;min-height:510px}.cart-heading{display:flex;justify-content:space-between;align-items:center;padding-bottom:16px;border-bottom:1px solid #edf0ec}.cart-heading h2{margin:0;font-size:18px}.cart-heading p{margin:5px 0 0;color:#858d87;font-size:12px}.clear-button{border:0;background:transparent;color:#c96f4a;font-weight:600;cursor:pointer}.clear-button:disabled{opacity:.4;cursor:not-allowed}.table-field{display:flex;flex-direction:column;gap:8px;margin:17px 0;font-size:13px;font-weight:600}.table-field select{width:100%}.cart-empty{flex:1;min-height:210px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#858d87}.cart-empty-icon{display:grid;place-items:center;width:42px;height:42px;border-radius:50%;background:#f8eee9;color:#c96f4a;font-size:25px}.cart-empty strong{margin-top:12px;color:#4b554e;font-size:14px}.cart-empty p{max-width:220px;font-size:12px;line-height:1.5}.cart-items{display:flex;flex-direction:column;gap:14px;max-height:350px;overflow:auto}.cart-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding-bottom:13px;border-bottom:1px solid #f0f1ef}.cart-item-info{display:flex;flex-direction:column;gap:5px;min-width:0}.cart-item-info strong{font-size:13px}.cart-item-info span{font-size:11px;color:#858d87}.quantity-control{display:flex;align-items:center;gap:9px}.quantity-control button{width:25px;height:25px;border:1px solid #e3e6e2;border-radius:6px;background:#fff;cursor:pointer}.quantity-control span{font-size:12px;font-weight:600}.item-subtotal{grid-column:1/-1;text-align:right;font-size:12px}.cart-summary{margin-top:auto;padding-top:18px}.cart-summary>div{display:flex;justify-content:space-between;margin-bottom:12px;font-size:13px;color:#737c75}.cart-summary .grand-total{padding-top:13px;border-top:1px solid #e9ece8;color:#26332d;font-size:16px}.grand-total strong{font-size:19px}.submit-order{width:100%;height:46px;margin-top:7px;border:0;border-radius:9px;background:#c96f4a;color:#fff;font-weight:700;cursor:pointer}.submit-order:disabled{opacity:.5;cursor:not-allowed}.empty-state{padding:50px 15px;text-align:center;color:#858d87;font-size:13px}@media(max-width:1000px){.sales-layout{grid-template-columns:1fr}.cart-panel{position:static;min-height:420px}}@media(max-width:560px){.page-header{align-items:flex-start;flex-direction:column}.catalog-toolbar{flex-direction:column}.catalog-toolbar select{width:100%}.product-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.sale-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.sale-modal {
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.order-modal .field-label {
+  display: block;
+  margin: 14px 0 6px;
+  font-weight: 600;
+}
+
+.cart-list {
+  margin-top: 16px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.cart-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.cart-row small {
+  display: block;
+  margin-top: 4px;
+}
+
+.cart-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.order-total {
+  margin-top: 18px;
+  text-align: right;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.order-modal textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.sale-modal h3 {
+  margin-top: 0;
+}
+
+.sale-modal-actions {
+  justify-content: flex-end;
+  margin-top: 24px;
+  gap: 10px;
+}
+
+.sale-modal-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 </style>

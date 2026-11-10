@@ -1,17 +1,42 @@
+
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import {
-  salesService,
-  type Sale
-} from '../services/sales.service'
+import { ref, computed, onMounted } from 'vue'
+import { api } from '../services/api'
+
+interface SaleItem {
+  id: number
+  name: string
+  quantity: number
+  price: number
+  subtotal: number
+}
+
+interface SalePayment {
+  id: number
+  amount: number
+  status: string
+  method: string
+  reference: string | null
+}
+
+interface Sale {
+  id: number
+  sale_number: string | number
+  created_at: string
+  total: number | string
+  subtotal?: number | string
+  tax?: number | string
+  discount?: number | string
+  status: string
+  items: SaleItem[]
+  payments: SalePayment[]
+}
 
 const sales = ref<Sale[]>([])
 const search = ref('')
 const isLoading = ref(false)
 const selectedSale = ref<Sale | null>(null)
 const isLoadingDetail = ref(false)
-const isOffline = ref(!navigator.onLine)
-const errorMessage = ref('')
 
 const filteredSales = computed(() =>
   sales.value.filter(sale =>
@@ -22,7 +47,7 @@ const filteredSales = computed(() =>
 )
 
 const totalSales = computed(() =>
-  sales.value.reduce((sum, sale) => sum + Number(sale.total || 0), 0)
+  sales.value.reduce((sum, sale) => sum + Number(sale.total), 0)
 )
 
 const completedSales = computed(() =>
@@ -38,15 +63,14 @@ function formatCurrency(value: number | string | undefined) {
 }
 
 function formatDate(value: string) {
-  return value ? new Date(value).toLocaleString('es-CO') : 'Sin fecha'
+  return new Date(value).toLocaleString('es-CO')
 }
 
 function statusLabel(status: string) {
   const statuses: Record<string, string> = {
     completed: 'Completada',
     pending: 'Pendiente',
-    cancelled: 'Cancelada',
-    pending_sync: 'Pendiente de sincronización'
+    cancelled: 'Cancelada'
   }
 
   return statuses[status] || status
@@ -54,18 +78,19 @@ function statusLabel(status: string) {
 
 async function loadSales() {
   isLoading.value = true
-  errorMessage.value = ''
-  isOffline.value = !navigator.onLine
 
   try {
-    const result = await salesService.getAll()
-    sales.value = Array.isArray(result) ? result : []
+    const response = await api.get<Sale[]>('/sales')
+
+    sales.value = response.data.map(sale => ({
+      ...sale,
+      total: Number(sale.total),
+      items: sale.items || [],
+      payments: sale.payments || []
+    }))
   } catch (error) {
     console.error('Error al cargar ventas:', error)
-    sales.value = []
-    errorMessage.value = isOffline.value
-      ? 'No hay ventas guardadas para consultar sin conexión.'
-      : 'No se pudieron cargar las ventas.'
+    alert('No se pudieron cargar las ventas.')
   } finally {
     isLoading.value = false
   }
@@ -76,7 +101,18 @@ async function openSaleDetails(sale: Sale) {
   selectedSale.value = null
 
   try {
-    selectedSale.value = await salesService.getById(sale.id)
+    const response = await api.get(`/sales/${sale.id}`)
+    const data = response.data.venta || response.data
+
+    selectedSale.value = {
+      ...data,
+      total: Number(data.total),
+      subtotal: Number(data.subtotal || 0),
+      tax: Number(data.tax || 0),
+      discount: Number(data.discount || 0),
+      items: data.items || [],
+      payments: data.payments || []
+    }
   } catch (error) {
     console.error('Error al consultar el detalle de la venta:', error)
     alert('No se pudo cargar el detalle de la venta.')
@@ -89,22 +125,7 @@ function closeSaleDetails() {
   selectedSale.value = null
 }
 
-function handleConnectionChange() {
-  isOffline.value = !navigator.onLine
-  loadSales()
-}
-
-onMounted(() => {
-  loadSales()
-
-  window.addEventListener('online', handleConnectionChange)
-  window.addEventListener('offline', handleConnectionChange)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('online', handleConnectionChange)
-  window.removeEventListener('offline', handleConnectionChange)
-})
+onMounted(loadSales)
 </script>
 
 <template>
@@ -114,14 +135,6 @@ onUnmounted(() => {
         <h2>Historial de ventas</h2>
         <p>Consulta las ventas realizadas y sus valores.</p>
       </div>
-    </div>
-
-    <div v-if="isOffline" class="demo-notice">
-      Estás trabajando sin conexión. Se muestran las ventas guardadas localmente.
-    </div>
-
-    <div v-if="errorMessage" class="error-message">
-      {{ errorMessage }}
     </div>
 
     <div class="stats-grid products-summary">
@@ -179,7 +192,7 @@ onUnmounted(() => {
               <td>{{ formatDate(sale.created_at) }}</td>
 
               <td>
-                {{ (sale.items || []).reduce((sum, item) => sum + Number(item.quantity), 0) }}
+                {{ sale.items.reduce((sum, item) => sum + Number(item.quantity), 0) }}
                 unidades
               </td>
 
@@ -215,8 +228,7 @@ onUnmounted(() => {
     </section>
 
     <p class="demo-notice">
-      Las ventas se consultan desde PostgreSQL y se almacenan localmente
-      para permitir su consulta sin conexión.
+      Las ventas se consultan directamente desde PostgreSQL.
     </p>
 
     <div
@@ -273,7 +285,7 @@ onUnmounted(() => {
 
               <tbody>
                 <tr
-                  v-for="item in selectedSale.items || []"
+                  v-for="item in selectedSale.items"
                   :key="item.id"
                 >
                   <td>{{ item.name }}</td>
@@ -282,7 +294,7 @@ onUnmounted(() => {
                   <td>{{ formatCurrency(item.subtotal) }}</td>
                 </tr>
 
-                <tr v-if="!selectedSale.items || selectedSale.items.length === 0">
+                <tr v-if="selectedSale.items.length === 0">
                   <td colspan="4">
                     No hay productos registrados en esta venta.
                   </td>
@@ -294,7 +306,7 @@ onUnmounted(() => {
           <h3>Información del pago</h3>
 
           <div
-            v-for="payment in selectedSale.payments || []"
+            v-for="payment in selectedSale.payments"
             :key="payment.id"
             class="payment-detail"
           >
@@ -319,7 +331,7 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <p v-if="!selectedSale.payments || selectedSale.payments.length === 0" class="empty-payment">
+          <p v-if="selectedSale.payments.length === 0" class="empty-payment">
             No hay información de pagos disponible.
           </p>
 
