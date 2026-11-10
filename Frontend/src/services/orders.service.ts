@@ -75,15 +75,15 @@ export const ordersService = {
       localOrder as unknown as Record<string, unknown> & { id: number }
     )
 
-await addOperation({
-  operationId,
-  type: 'CREATE',
-  entity: 'orders',
-  data: {
-    ...data,
-    localOrderId: localOrder.id
-  }
-})
+    await addOperation({
+      operationId,
+      type: 'CREATE',
+      entity: 'orders',
+      data: {
+        ...data,
+        localOrderId: localOrder.id
+      }
+    })
 
     return localOrder
   },

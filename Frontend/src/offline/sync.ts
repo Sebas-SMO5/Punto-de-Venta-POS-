@@ -242,6 +242,36 @@ const sendCategoryOperation = async (
   }
 }
 
+const updatePendingSalesWithRealOrderId = async (
+  localOrderId: number,
+  realOrderId: number
+): Promise<void> => {
+  const operations = await getPendingOperations()
+
+  for (const pendingOperation of operations) {
+    if (
+      pendingOperation.entity === 'sales' &&
+      pendingOperation.type === 'CREATE' &&
+      pendingOperation.id !== undefined
+    ) {
+      const data = { ...pendingOperation.data }
+
+      const relatedToLocalOrder =
+        Number(data.localOrderId) === localOrderId ||
+        Number(data.orderId) === localOrderId
+
+      if (relatedToLocalOrder) {
+        data.orderId = realOrderId
+        delete data.localOrderId
+
+        await updateOperation(pendingOperation.id, {
+          data
+        })
+      }
+    }
+  }
+}
+
 const sendOrderOperation = async (
   operation: PendingOperation
 ): Promise<void> => {
@@ -251,9 +281,10 @@ const sendOrderOperation = async (
 
   const endpoint = getEndpoint('orders')
   const data = { ...operation.data }
-  const localOrderId = data.localOrderId
+  const localOrderId = Number(data.localOrderId)
 
   delete data.localOrderId
+
   data.localId = operation.operationId
 
   const response = await fetch(endpoint, {
@@ -278,8 +309,13 @@ const sendOrderOperation = async (
     throw new Error('El servidor no devolvió el pedido creado')
   }
 
-  if (typeof localOrderId === 'number') {
+  if (Number.isInteger(localOrderId) && localOrderId < 0) {
     await deleteLocalData('orders', localOrderId)
+
+    await updatePendingSalesWithRealOrderId(
+      localOrderId,
+      order.id
+    )
   }
 
   await saveLocalData(
@@ -316,6 +352,7 @@ const sendSaleOperation = async (
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
+      localId: operation.operationId,
       orderId,
       paymentMethodId,
       reference: data.reference ?? null

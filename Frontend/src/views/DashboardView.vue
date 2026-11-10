@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useProductsStore } from '../stores/products'
 import { useOrdersStore } from '../stores/orders'
+import { salesService, type Sale } from '../services/sales.service'
 import StatCard from '../components/StatCard.vue'
 
 const productsStore = useProductsStore()
 const ordersStore = useOrdersStore()
+
+const sales = ref<Sale[]>([])
+const isLoading = ref(true)
+const isOffline = ref(!navigator.onLine)
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat('es-CO', {
@@ -38,13 +43,13 @@ const availableProducts = computed(() =>
 const todaySales = computed(() => {
   const today = new Date().toDateString()
 
-  return ordersStore.orders
+  return sales.value
     .filter(
-      order =>
-        order.status === 'Entregado' &&
-        new Date(order.createdAt).toDateString() === today,
+      sale =>
+        sale.status === 'completed' &&
+        new Date(sale.created_at).toDateString() === today,
     )
-    .reduce((total, order) => total + order.total, 0)
+    .reduce((total, sale) => total + Number(sale.total || 0), 0)
 })
 
 const recentOrders = computed(() =>
@@ -81,7 +86,7 @@ const stats = computed(() => [
     label: 'Ventas del día',
     value: formatCurrency(todaySales.value),
     icon: '$',
-    note: 'Total de pedidos entregados hoy',
+    note: 'Total de ventas completadas hoy',
   },
   {
     label: 'Pedidos activos',
@@ -102,6 +107,47 @@ const stats = computed(() => [
     note: 'Productos disponibles en el menú',
   },
 ])
+
+async function loadDashboard() {
+  isLoading.value = true
+
+  try {
+    await Promise.all([
+      productsStore.loadProducts(),
+      loadSales(),
+    ])
+  } catch (error) {
+    console.error('Error al cargar el Dashboard:', error)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+async function loadSales() {
+  try {
+    sales.value = await salesService.getAll()
+  } catch (error) {
+    console.error('Error al cargar las ventas del Dashboard:', error)
+    sales.value = []
+  }
+}
+
+function handleConnectionChange() {
+  isOffline.value = !navigator.onLine
+  loadDashboard()
+}
+
+onMounted(() => {
+  loadDashboard()
+
+  window.addEventListener('online', handleConnectionChange)
+  window.addEventListener('offline', handleConnectionChange)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('online', handleConnectionChange)
+  window.removeEventListener('offline', handleConnectionChange)
+})
 </script>
 
 <template>
@@ -117,12 +163,16 @@ const stats = computed(() => [
       </RouterLink>
     </div>
 
+    <div v-if="isOffline" class="demo-notice">
+      Estás trabajando sin conexión. Se muestran los datos disponibles localmente.
+    </div>
+
     <div class="stats-grid">
       <StatCard
         v-for="stat in stats"
         :key="stat.label"
         :label="stat.label"
-        :value="stat.value"
+        :value="isLoading ? '...' : stat.value"
         :icon="stat.icon"
         :note="stat.note"
       />
@@ -177,6 +227,7 @@ const stats = computed(() => [
                       pending: order.status === 'Pendiente',
                       preparing: order.status === 'En preparación',
                       ready: order.status === 'Entregado',
+                      canceled: order.status === 'Cancelado',
                     }"
                   >
                     {{ order.status }}
@@ -220,10 +271,5 @@ const stats = computed(() => [
         </div>
       </section>
     </div>
-
-    <p class="demo-notice">
-      Información actualizada desde el almacenamiento local del navegador.
-      La conexión con el backend se implementará posteriormente.
-    </p>
   </div>
 </template>

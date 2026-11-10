@@ -1,3 +1,4 @@
+```vue
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../services/api'
@@ -33,6 +34,7 @@ interface Sale {
   id: number
   order_id: number
   sale_number: string
+  local_id?: string
   created_at?: string
   total?: number
   status?: string
@@ -161,8 +163,13 @@ async function loadSales() {
       return
     }
 
-    const response = await api.get<Sale[]>('/sales')
-    const serverSales = response.data
+    const response = await api.get('/sales')
+
+    const responseData = response.data
+
+    const serverSales: Sale[] = Array.isArray(responseData)
+      ? responseData
+      : responseData.ventas || responseData.sales || []
 
     const localSales = await getLocalData('sales') as unknown as Sale[]
 
@@ -252,14 +259,35 @@ async function registerSale() {
   isRegistering.value = true
 
   try {
+    const operationId = crypto.randomUUID()
+
+    const paymentMethod = paymentMethods.find(
+      method => method.id === selectedPaymentMethod.value
+    )
+
     if (navigator.onLine) {
       const response = await api.post('/sales', {
+        localId: operationId,
         orderId: order.id,
         paymentMethodId: selectedPaymentMethod.value,
         reference: null
       })
 
       const registeredSale = response.data.venta
+
+      if (!registeredSale) {
+        throw new Error('El servidor no devolvió la venta registrada.')
+      }
+
+      await saveLocalData(
+        'sales',
+        {
+          ...registeredSale,
+          id: Number(registeredSale.id),
+          order_id: Number(registeredSale.order_id ?? order.id),
+          pendingSync: false
+        } as unknown as Record<string, unknown> & { id: number }
+      )
 
       alert(
         `¡Venta registrada correctamente!\n\nVenta: ${registeredSale.sale_number}\nPedido: ${order.order_number}\nTotal: ${formatCurrency(order.total)}`
@@ -275,16 +303,12 @@ async function registerSale() {
       return
     }
 
-    const operationId = crypto.randomUUID()
     const localSaleId = -Date.now()
-
-    const paymentMethod = paymentMethods.find(
-      method => method.id === selectedPaymentMethod.value
-    )
 
     const localSale: Sale = {
       id: localSaleId,
       order_id: order.id,
+      local_id: operationId,
       sale_number: `PEND-${Math.abs(localSaleId)}`,
       created_at: new Date().toISOString(),
       total: order.total,
@@ -330,6 +354,7 @@ async function registerSale() {
     console.error('Error al registrar venta:', error)
     alert(
       error.response?.data?.mensaje ||
+      error.message ||
       'No se pudo registrar la venta.'
     )
   } finally {
@@ -588,3 +613,4 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 </style>
+```
