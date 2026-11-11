@@ -10,6 +10,8 @@ interface Product {
   category: string
   price: number | string
   available: boolean
+  current_stock: number | string
+  minimum_stock: number | string
 }
 
 interface Category {
@@ -26,11 +28,14 @@ const selectedCategory = ref('Todas')
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
 const isLoading = ref(false)
+const isSaving = ref(false)
 
 const form = ref({
   name: '',
   category: '',
   price: 0,
+  current_stock: 0,
+  minimum_stock: 0,
   available: true,
 })
 
@@ -72,6 +77,8 @@ async function loadProducts() {
     products.value = productsResponse.data.map((product) => ({
       ...product,
       price: Number(product.price),
+      current_stock: Number(product.current_stock ?? 0),
+      minimum_stock: Number(product.minimum_stock ?? 0),
     }))
 
     categories.value = categoriesResponse.data.filter(
@@ -94,18 +101,20 @@ async function loadProducts() {
 }
 
 function openCreateForm() {
+  if (categories.value.length === 0) {
+    alert('Primero debes registrar una categoría.')
+    return
+  }
+
   editingId.value = null
 
   form.value = {
     name: '',
     category: categories.value[0]?.name || '',
     price: 0,
+    current_stock: 0,
+    minimum_stock: 0,
     available: true,
-  }
-
-  if (categories.value.length === 0) {
-    alert('Primero debes registrar una categoría.')
-    return
   }
 
   showForm.value = true
@@ -118,6 +127,8 @@ function editProduct(product: Product) {
     name: product.name,
     category: product.category,
     price: Number(product.price),
+    current_stock: Number(product.current_stock),
+    minimum_stock: Number(product.minimum_stock),
     available: product.available,
   }
 
@@ -127,9 +138,20 @@ function editProduct(product: Product) {
 async function saveProduct() {
   const name = form.value.name.trim()
   const price = Number(form.value.price)
+  const currentStock = Number(form.value.current_stock)
+  const minimumStock = Number(form.value.minimum_stock)
 
-  if (!name || !form.value.category || !Number.isFinite(price) || price <= 0) {
-    alert('Completa los campos correctamente.')
+  if (
+    !name ||
+    !form.value.category ||
+    !Number.isFinite(price) ||
+    price <= 0 ||
+    !Number.isFinite(minimumStock) ||
+    minimumStock < 0 ||
+    !Number.isFinite(currentStock) ||
+    currentStock < 0
+  ) {
+    alert('Completa los campos correctamente. Los valores de stock no pueden ser negativos.')
     return
   }
 
@@ -137,14 +159,20 @@ async function saveProduct() {
     name,
     category: form.value.category,
     price,
+    minimum_stock: minimumStock,
     available: form.value.available,
   }
+
+  isSaving.value = true
 
   try {
     if (editingId.value !== null) {
       await api.put(`/products/${editingId.value}`, data)
     } else {
-      await api.post('/products', data)
+      await api.post('/products', {
+        ...data,
+        current_stock: currentStock,
+      })
     }
 
     showForm.value = false
@@ -154,6 +182,8 @@ async function saveProduct() {
   } catch (error: any) {
     console.error('Error al guardar producto:', error)
     alert(error.response?.data?.mensaje || 'No se pudo guardar el producto.')
+  } finally {
+    isSaving.value = false
   }
 }
 
@@ -182,7 +212,7 @@ onMounted(loadProducts)
     <div class="page-title-row">
       <div>
         <h2>Productos del restaurante</h2>
-        <p>Administra los platos y las bebidas del menú.</p>
+        <p>Administra los platos, bebidas y existencias del menú.</p>
       </div>
 
       <button class="primary-button" @click="openCreateForm">
@@ -240,6 +270,8 @@ onMounted(loadProducts)
               <th>Producto</th>
               <th>Categoría</th>
               <th>Precio</th>
+              <th>Stock actual</th>
+              <th>Stock mínimo</th>
               <th>Disponibilidad</th>
               <th>Acciones</th>
             </tr>
@@ -247,7 +279,7 @@ onMounted(loadProducts)
 
           <tbody>
             <tr v-if="isLoading">
-              <td colspan="5">Cargando productos...</td>
+              <td colspan="7">Cargando productos...</td>
             </tr>
 
             <tr
@@ -262,12 +294,16 @@ onMounted(loadProducts)
 
               <td>{{ formatCurrency(product.price) }}</td>
 
+              <td>{{ product.current_stock }}</td>
+
+              <td>{{ product.minimum_stock }}</td>
+
               <td>
                 <span
                   class="status-pill"
                   :class="product.available ? 'ready' : 'pending'"
                 >
-                  {{ product.available ? 'Disponible' : 'Agotado' }}
+                  {{ product.available ? 'Disponible' : 'No disponible' }}
                 </span>
               </td>
 
@@ -291,7 +327,7 @@ onMounted(loadProducts)
             </tr>
 
             <tr v-if="!isLoading && filteredProducts.length === 0">
-              <td colspan="5">No se encontraron productos.</td>
+              <td colspan="7">No se encontraron productos.</td>
             </tr>
           </tbody>
         </table>
@@ -347,6 +383,35 @@ onMounted(loadProducts)
           required
         />
 
+        <label for="product-current-stock">Stock actual</label>
+
+        <input
+          id="product-current-stock"
+          v-model.number="form.current_stock"
+          class="search-input"
+          type="number"
+          min="0"
+          step="0.01"
+          required
+          :disabled="editingId !== null"
+        />
+
+        <small v-if="editingId !== null">
+          El stock actual no se modifica desde la edición del producto.
+        </small>
+
+        <label for="product-minimum-stock">Stock mínimo</label>
+
+        <input
+          id="product-minimum-stock"
+          v-model.number="form.minimum_stock"
+          class="search-input"
+          type="number"
+          min="0"
+          step="0.01"
+          required
+        />
+
         <label class="availability-field">
           <input v-model="form.available" type="checkbox" />
           Producto disponible para la venta
@@ -361,15 +426,19 @@ onMounted(loadProducts)
             Cancelar
           </button>
 
-          <button type="submit" class="primary-button">
-            Guardar producto
+          <button
+            type="submit"
+            class="primary-button"
+            :disabled="isSaving"
+          >
+            {{ isSaving ? 'Guardando...' : 'Guardar producto' }}
           </button>
         </div>
       </form>
     </div>
 
     <p class="demo-notice">
-      Los productos se consultan y almacenan directamente en PostgreSQL.
+      Los productos y sus existencias se consultan y almacenan en PostgreSQL.
     </p>
   </div>
 </template>

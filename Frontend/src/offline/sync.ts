@@ -69,8 +69,9 @@ const sendProductOperation = async (
     }
 
     const product = result?.product || result
+    const productId = Number(product?.id)
 
-    if (!product || typeof product.id !== 'number') {
+    if (!product || !Number.isSafeInteger(productId) || productId <= 0) {
       throw new Error('El servidor no devolvió el producto creado')
     }
 
@@ -78,10 +79,10 @@ const sendProductOperation = async (
       await deleteLocalData('products', id)
     }
 
-    await saveLocalData(
-      'products',
-      product as Record<string, unknown> & { id: number }
-    )
+    await saveLocalData('products', {
+      ...product,
+      id: productId
+    } as Record<string, unknown> & { id: number })
 
     return
   }
@@ -111,11 +112,11 @@ const sendProductOperation = async (
 
     const product = result?.product || result
 
-    if (product && typeof product.id === 'number') {
-      await saveLocalData(
-        'products',
-        product as Record<string, unknown> & { id: number }
-      )
+    if (product && Number.isSafeInteger(Number(product.id))) {
+      await saveLocalData('products', {
+        ...product,
+        id: Number(product.id)
+      } as Record<string, unknown> & { id: number })
     }
 
     return
@@ -165,8 +166,9 @@ const sendCategoryOperation = async (
     }
 
     const category = result?.category || result
+    const categoryId = Number(category?.id)
 
-    if (!category || typeof category.id !== 'number') {
+    if (!category || !Number.isSafeInteger(categoryId) || categoryId <= 0) {
       throw new Error('El servidor no devolvió la categoría creada')
     }
 
@@ -174,10 +176,10 @@ const sendCategoryOperation = async (
       await deleteLocalData('categories', id)
     }
 
-    await saveLocalData(
-      'categories',
-      category as Record<string, unknown> & { id: number }
-    )
+    await saveLocalData('categories', {
+      ...category,
+      id: categoryId
+    } as Record<string, unknown> & { id: number })
 
     return
   }
@@ -207,11 +209,11 @@ const sendCategoryOperation = async (
 
     const category = result?.category || result
 
-    if (category && typeof category.id === 'number') {
-      await saveLocalData(
-        'categories',
-        category as Record<string, unknown> & { id: number }
-      )
+    if (category && Number.isSafeInteger(Number(category.id))) {
+      await saveLocalData('categories', {
+        ...category,
+        id: Number(category.id)
+      } as Record<string, unknown> & { id: number })
     }
 
     return
@@ -250,45 +252,113 @@ const sendOrderOperation = async (
 
   if (operation.type === 'CREATE') {
     const localOrderId = data.localOrderId
+
     delete data.localOrderId
+
     data.localId = operation.operationId
 
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify(data)
     })
+
     const result = await readResponse(response)
-    if (!response.ok) throw new Error(result?.mensaje || `Error ${response.status} al sincronizar el pedido`)
+
+    if (!response.ok) {
+      throw new Error(
+        result?.mensaje || `Error ${response.status} al sincronizar el pedido`
+      )
+    }
+
     const order = result?.order || result
-    if (!order || typeof order.id !== 'number') throw new Error('El servidor no devolvió el pedido creado')
-    if (typeof localOrderId === 'number') await deleteLocalData('orders', localOrderId)
-    await saveLocalData('orders', order as Record<string, unknown> & { id: number })
+    const serverOrderId = Number(order?.id)
+
+    if (
+      !order ||
+      !Number.isSafeInteger(serverOrderId) ||
+      serverOrderId <= 0
+    ) {
+      throw new Error(
+        'El servidor no devolvió un identificador válido para el pedido'
+      )
+    }
+
+    if (localOrderId !== undefined && localOrderId !== null) {
+      await deleteLocalData('orders', Number(localOrderId))
+    }
+
+    await saveLocalData('orders', {
+      ...order,
+      id: serverOrderId
+    } as Record<string, unknown> & { id: number })
+
     return
   }
 
   const id = Number(data.id)
-  if (!Number.isInteger(id) || id <= 0) throw new Error('No se puede sincronizar el estado de un pedido sin identificador del servidor')
+
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error(
+      'No se puede sincronizar el estado de un pedido sin identificador del servidor'
+    )
+  }
 
   if (operation.type === 'UPDATE') {
     const response = await fetch(`${endpoint}/${id}/status`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: data.status })
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        status: data.status
+      })
     })
+
     const result = await readResponse(response)
-    if (!response.ok) throw new Error(result?.mensaje || `Error ${response.status} al actualizar el pedido`)
+
+    if (!response.ok) {
+      throw new Error(
+        result?.mensaje || `Error ${response.status} al actualizar el pedido`
+      )
+    }
+
     const order = result?.order || result
-    if (order && typeof order.id === 'number') await saveLocalData('orders', order as Record<string, unknown> & { id: number })
+
+    if (order && Number.isSafeInteger(Number(order.id))) {
+      await saveLocalData('orders', {
+        ...order,
+        id: Number(order.id)
+      } as Record<string, unknown> & { id: number })
+    }
+
     return
   }
 
   if (operation.type === 'DELETE') {
-    const response = await fetch(`${endpoint}/${id}`, { method: 'DELETE' })
+    const response = await fetch(`${endpoint}/${id}`, {
+      method: 'DELETE'
+    })
+
     const result = await readResponse(response)
-    if (!response.ok) throw new Error(result?.mensaje || `Error ${response.status} al cancelar el pedido`)
+
+    if (!response.ok) {
+      throw new Error(
+        result?.mensaje || `Error ${response.status} al cancelar el pedido`
+      )
+    }
+
     const order = result?.order
-    if (order && typeof order.id === 'number') await saveLocalData('orders', order as Record<string, unknown> & { id: number })
+
+    if (order && Number.isSafeInteger(Number(order.id))) {
+      await saveLocalData('orders', {
+        ...order,
+        id: Number(order.id)
+      } as Record<string, unknown> & { id: number })
+    }
+
     return
   }
 }
@@ -336,14 +406,15 @@ const sendSaleOperation = async (
   }
 
   const sale = result?.venta || result?.sale || result
+  const saleId = Number(sale?.id)
 
-  if (!sale || !Number.isFinite(Number(sale.id))) {
+  if (!sale || !Number.isSafeInteger(saleId) || saleId <= 0) {
     throw new Error('El servidor no devolvió la venta registrada')
   }
 
   const savedSale = {
     ...sale,
-    id: Number(sale.id),
+    id: saleId,
     order_id: Number(sale.order_id ?? orderId),
     pendingSync: false
   }

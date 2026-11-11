@@ -14,7 +14,9 @@ async function getProductById(req, res, next) {
     const product = await productsService.getById(Number(req.params.id))
 
     if (!product) {
-      return res.status(404).json({ mensaje: 'Producto no encontrado' })
+      return res.status(404).json({
+        mensaje: 'Producto no encontrado'
+      })
     }
 
     res.json(product)
@@ -40,7 +42,9 @@ async function updateProduct(req, res, next) {
     )
 
     if (!product) {
-      return res.status(404).json({ mensaje: 'Producto no encontrado' })
+      return res.status(404).json({
+        mensaje: 'Producto no encontrado'
+      })
     }
 
     res.json(product)
@@ -54,10 +58,14 @@ async function deleteProduct(req, res, next) {
     const deleted = await productsService.delete(Number(req.params.id))
 
     if (!deleted) {
-      return res.status(404).json({ mensaje: 'Producto no encontrado' })
+      return res.status(404).json({
+        mensaje: 'Producto no encontrado'
+      })
     }
 
-    res.json({ mensaje: 'Producto desactivado correctamente' })
+    res.json({
+      mensaje: 'Producto desactivado correctamente'
+    })
   } catch (error) {
     next(error)
   }

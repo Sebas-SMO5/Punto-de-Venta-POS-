@@ -1,4 +1,3 @@
-
 const salesRepository = require('../repositories/sales.repository')
 
 async function getAll() {

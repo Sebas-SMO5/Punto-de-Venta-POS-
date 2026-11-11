@@ -169,6 +169,63 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
       throw new Error('El pedido no tiene productos registrados')
     }
 
+    for (const item of itemsResult.rows) {
+      const inventoryResult = await client.query(`
+        SELECT current_stock
+        FROM inventory
+        WHERE product_id = $1
+        FOR UPDATE
+      `, [item.product_id])
+
+      if (inventoryResult.rows.length === 0) {
+        throw new Error(
+          `El producto ${item.product_name} no tiene inventario registrado`
+        )
+      }
+
+      const previousStock = Number(inventoryResult.rows[0].current_stock)
+      const quantity = Number(item.quantity)
+
+      if (previousStock < quantity) {
+        throw new Error(
+          `Stock insuficiente para ${item.product_name}. Existencias: ${previousStock}, solicitado: ${quantity}`
+        )
+      }
+
+      const newStock = previousStock - quantity
+
+      await client.query(`
+        UPDATE inventory
+        SET
+          current_stock = $1,
+          updated_at = NOW()
+        WHERE product_id = $2
+      `, [newStock, item.product_id])
+
+      await client.query(`
+        INSERT INTO inventory_movements (
+          local_id,
+          product_id,
+          user_id,
+          movement_type,
+          quantity,
+          previous_stock,
+          new_stock,
+          reason,
+          created_at
+        )
+        VALUES ($1, $2, $3, 'exit', $4, $5, $6, $7, NOW())
+      `, [
+        randomUUID(),
+        item.product_id,
+        order.user_id,
+        quantity,
+        previousStock,
+        newStock,
+        `Venta ${orderId}`
+      ])
+    }
+
     const saleNumber = `VTA-${randomUUID()}`
 
     const saleResult = await client.query(`
