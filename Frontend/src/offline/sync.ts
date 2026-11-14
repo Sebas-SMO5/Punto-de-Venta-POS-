@@ -7,6 +7,7 @@ import {
 
 import {
   getPendingOperations,
+  getAllOperations,
   updateOperation,
   deleteOperation
 } from './queue'
@@ -254,7 +255,6 @@ const sendOrderOperation = async (
     const localOrderId = data.localOrderId
 
     delete data.localOrderId
-
     data.localId = operation.operationId
 
     const response = await fetch(endpoint, {
@@ -294,6 +294,37 @@ const sendOrderOperation = async (
       ...order,
       id: serverOrderId
     } as Record<string, unknown> & { id: number })
+
+    const pendingOperations = await getAllOperations()
+
+    for (const pending of pendingOperations) {
+      if (pending.id === operation.id) continue
+
+      const pendingData = { ...pending.data }
+      let changed = false
+
+      if (
+        pending.entity === 'orders' &&
+        Number(pendingData.id) === Number(localOrderId)
+      ) {
+        pendingData.id = serverOrderId
+        changed = true
+      }
+
+      if (
+        pending.entity === 'sales' &&
+        Number(pendingData.orderId) === Number(localOrderId)
+      ) {
+        pendingData.orderId = serverOrderId
+        changed = true
+      }
+
+      if (changed && pending.id !== undefined) {
+        await updateOperation(pending.id, {
+          data: pendingData
+        })
+      }
+    }
 
     return
   }
@@ -464,21 +495,29 @@ export const synchronizeData = async (): Promise<void> => {
   try {
     const operations = await getPendingOperations()
 
-    for (const operation of operations) {
+    for (const queuedOperation of operations) {
       if (!navigator.onLine) break
-      if (operation.id === undefined) continue
+      if (queuedOperation.id === undefined) continue
+
+      const latestOperations = await getAllOperations()
+
+      const operation = latestOperations.find(
+        item => item.id === queuedOperation.id
+      )
+
+      if (!operation || operation.status === 'error') continue
 
       try {
-        await updateOperation(operation.id, {
+        await updateOperation(operation.id!, {
           status: 'processing',
           error: undefined
         })
 
         await sendOperation(operation)
 
-        await deleteOperation(operation.id)
+        await deleteOperation(operation.id!)
       } catch (error) {
-        await updateOperation(operation.id, {
+        await updateOperation(operation.id!, {
           status: 'error',
           attempts: operation.attempts + 1,
           error: error instanceof Error

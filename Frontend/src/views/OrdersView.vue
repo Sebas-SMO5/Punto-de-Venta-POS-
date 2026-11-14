@@ -2,10 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../services/api'
 import { ordersService } from '../services/orders.service'
-import {
-  getLocalData,
-  saveLocalData
-} from '../offline/db'
+import { getLocalData, saveLocalData } from '../offline/db'
 import { addOperation } from '../offline/queue'
 
 interface OrderItem {
@@ -197,11 +194,6 @@ async function updateStatus(
   id: number,
   status: 'completed' | 'cancelled'
 ) {
-  if (!navigator.onLine) {
-    alert('Necesitas conexión a internet para actualizar el estado del pedido.')
-    return
-  }
-
   const message = status === 'completed'
     ? '¿Marcar este pedido como entregado?'
     : '¿Cancelar este pedido?'
@@ -210,16 +202,21 @@ async function updateStatus(
 
   try {
     if (status === 'cancelled') {
-      await api.delete(`/orders/${id}`)
+      await ordersService.cancel(id)
     } else {
-      await api.patch(`/orders/${id}/status`, { status })
+      await ordersService.updateStatus(id, 'Entregado')
     }
 
     await loadOrders()
-    alert('Pedido actualizado correctamente.')
+
+    alert(
+      navigator.onLine
+        ? 'Pedido actualizado correctamente.'
+        : 'Pedido actualizado y guardado localmente. Se sincronizará cuando vuelva internet.'
+    )
   } catch (error: any) {
     console.error('Error al actualizar pedido:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo actualizar el pedido.')
+    alert(error.response?.data?.mensaje || error.message || 'No se pudo actualizar el pedido.')
   }
 }
 
@@ -302,10 +299,11 @@ async function registerSale() {
       ]
     }
 
-    await saveLocalData(
-      'sales',
-      localSale as unknown as Record<string, unknown> & { id: number }
-    )
+    const saleToSave = JSON.parse(
+      JSON.stringify(localSale)
+    ) as Record<string, unknown> & { id: number }
+
+    await saveLocalData('sales', saleToSave)
 
     await addOperation({
       operationId,

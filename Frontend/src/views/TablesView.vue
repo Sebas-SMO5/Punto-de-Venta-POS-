@@ -1,36 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api } from '../services/api'
+import { tablesService, type RestaurantTable } from '../services/tables.service'
+import { ordersService } from '../services/orders.service'
+import type { Order } from '../stores/orders'
 
-interface OrderItem {
-  id: number
-  productId: number
-  name: string
-  quantity: number
-  price: number
-  subtotal: number
-}
-
-interface Order {
-  id: number
-  orderNumber: number
-  status: string
-  total: number
-  notes: string
-  createdAt: string
-  items: OrderItem[]
-}
-
-interface RestaurantTable {
-  id: number
-  table_number: number
-  capacity: number
-  status: string
-  active: boolean
+interface TableWithOrders extends RestaurantTable {
   orders: Order[]
 }
 
-const tables = ref<RestaurantTable[]>([])
+const tables = ref<TableWithOrders[]>([])
 const isLoading = ref(false)
 
 const occupiedCount = computed(
@@ -55,30 +33,65 @@ function statusLabel(status: string) {
     preparing: 'En preparación',
     ready: 'Listo',
     completed: 'Entregado',
-    cancelled: 'Cancelado'
+    cancelled: 'Cancelado',
+    Pendiente: 'Pendiente',
+    'En preparación': 'En preparación',
+    Entregado: 'Entregado',
+    Cancelado: 'Cancelado'
   }
 
   return labels[status] || status
+}
+
+function getOrderTableId(order: Order): number {
+  const data = order as unknown as Record<string, unknown>
+
+  return Number(
+    data.table_id ??
+    data.tableId ??
+    data.tableNumber ??
+    data.table_number
+  )
+}
+
+function getOrderNumber(order: Order): string | number {
+  const data = order as unknown as Record<string, unknown>
+
+  return (
+    String(data.order_number ?? data.orderNumber ?? '') ||
+    order.id
+  )
+}
+
+function isActiveOrder(order: Order) {
+  return ![
+    'Entregado',
+    'Cancelado',
+    'completed',
+    'cancelled'
+  ].includes(order.status)
 }
 
 async function loadTables() {
   isLoading.value = true
 
   try {
-    const response = await api.get<RestaurantTable[]>('/tables')
+    const [restaurantTables, orders] = await Promise.all([
+      tablesService.getAll(),
+      ordersService.getAll()
+    ])
 
-    tables.value = response.data.map(table => ({
+    tables.value = restaurantTables.map(table => ({
       ...table,
-      orders: (table.orders || []).map(order => ({
-        ...order,
-        total: Number(order.total),
-        items: (order.items || []).map(item => ({
-          ...item,
-          quantity: Number(item.quantity),
-          price: Number(item.price),
-          subtotal: Number(item.subtotal)
+      orders: orders
+        .filter(order =>
+          getOrderTableId(order) === Number(table.id) &&
+          isActiveOrder(order)
+        )
+        .map(order => ({
+          ...order,
+          total: Number(order.total)
         }))
-      }))
     }))
   } catch (error) {
     console.error('Error al cargar mesas:', error)
@@ -88,7 +101,7 @@ async function loadTables() {
   }
 }
 
-function tableTotal(table: RestaurantTable) {
+function tableTotal(table: TableWithOrders) {
   return table.orders.reduce(
     (sum, order) => sum + Number(order.total),
     0
@@ -96,6 +109,11 @@ function tableTotal(table: RestaurantTable) {
 }
 
 async function completeOrder(orderId: number) {
+  if (!navigator.onLine) {
+    alert('Para entregar un pedido debes tener conexión a internet.')
+    return
+  }
+
   const confirmed = window.confirm(
     '¿Deseas marcar este pedido como entregado?'
   )
@@ -103,19 +121,21 @@ async function completeOrder(orderId: number) {
   if (!confirmed) return
 
   try {
-    await api.patch(`/orders/${orderId}/status`, {
-      status: 'completed'
-    })
-
+    await ordersService.updateStatus(orderId, 'Entregado')
     await loadTables()
     alert('Pedido entregado correctamente.')
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error al entregar pedido:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo entregar el pedido.')
+    alert('No se pudo entregar el pedido.')
   }
 }
 
 async function cancelOrder(orderId: number) {
+  if (!navigator.onLine) {
+    alert('Para cancelar un pedido debes tener conexión a internet.')
+    return
+  }
+
   const confirmed = window.confirm(
     '¿Deseas cancelar este pedido?'
   )
@@ -123,12 +143,12 @@ async function cancelOrder(orderId: number) {
   if (!confirmed) return
 
   try {
-    await api.delete(`/orders/${orderId}`)
+    await ordersService.cancel(orderId)
     await loadTables()
     alert('Pedido cancelado correctamente.')
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error al cancelar pedido:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo cancelar el pedido.')
+    alert('No se pudo cancelar el pedido.')
   }
 }
 
@@ -197,7 +217,7 @@ onMounted(loadTables)
               >
                 <div class="order-heading">
                   <strong>
-                    Pedido #{{ order.orderNumber || order.id }}
+                    Pedido {{ getOrderNumber(order) }}
                   </strong>
 
                   <span class="status-pill pending">
@@ -207,8 +227,8 @@ onMounted(loadTables)
 
                 <div class="order-products">
                   <p
-                    v-for="item in order.items"
-                    :key="item.id"
+                    v-for="(item, index) in order.items"
+                    :key="index"
                   >
                     {{ item.name }} × {{ item.quantity }}
                   </p>
@@ -220,7 +240,7 @@ onMounted(loadTables)
                 </div>
 
                 <div
-                  v-if="!['completed', 'cancelled'].includes(order.status)"
+                  v-if="isActiveOrder(order)"
                   class="order-actions"
                 >
                   <button
@@ -258,7 +278,7 @@ onMounted(loadTables)
     </section>
 
     <p class="demo-notice">
-      Las mesas y sus pedidos se consultan directamente desde PostgreSQL.
+      Las mesas y sus pedidos se consultan desde PostgreSQL o el almacenamiento local, según la conexión disponible.
     </p>
   </div>
 </template>

@@ -15,7 +15,7 @@ export const ordersService = {
       for (const order of response.data) {
         await saveLocalData(
           'orders',
-          order as unknown as Record<string, unknown> & { id: number }
+          { ...order, id: Number(order.id) } as unknown as Record<string, unknown> & { id: number }
         )
       }
 
@@ -32,7 +32,7 @@ export const ordersService = {
   async getById(id: number): Promise<Order> {
     if (id < 0 || !navigator.onLine) {
       const localOrders = await getLocalData('orders') as unknown as Order[]
-      const order = localOrders.find(item => item.id === id)
+      const order = localOrders.find(item => Number(item.id) === Number(id))
 
       if (!order) {
         throw new Error('No se encontró el pedido')
@@ -72,7 +72,7 @@ export const ordersService = {
 
         await saveLocalData(
           'orders',
-          response.data as unknown as Record<string, unknown> & { id: number }
+          { ...response.data, id: Number(response.data.id) } as unknown as Record<string, unknown> & { id: number }
         )
 
         return response.data
@@ -83,17 +83,23 @@ export const ordersService = {
       }
     }
 
-    const localOrder: Order = {
+    const localOrder = {
       id: -Date.now(),
-      tableNumber: tableId,
-      items,
+      local_id: operationId,
+      order_number: `PED-${String(Math.abs(Date.now())).slice(-6)}`,
+      table_id: Number(tableId),
+      table_number: Number(tableId),
+      tableNumber: Number(tableId),
+      items: JSON.parse(JSON.stringify(items)),
       total: items.reduce(
         (sum, item) => sum + Number(item.price) * Number(item.quantity),
         0
       ),
-      status: 'Pendiente',
+      status: 'pending',
+      notes,
+      created_at: new Date().toISOString(),
       createdAt: new Date().toISOString()
-    }
+    } as unknown as Order
 
     await saveLocalData(
       'orders',
@@ -122,8 +128,13 @@ export const ordersService = {
       'En preparación': 'preparing',
       'Listo': 'ready',
       'Entregado': 'completed',
-      'Cancelado': 'cancelled'
-    } as Record<string, string>)[status]
+      'Cancelado': 'cancelled',
+      'pending': 'pending',
+      'preparing': 'preparing',
+      'ready': 'ready',
+      'completed': 'completed',
+      'cancelled': 'cancelled'
+    } as Record<string, string>)[status] || status
 
     if (id > 0 && navigator.onLine) {
       try {
@@ -134,7 +145,7 @@ export const ordersService = {
 
         await saveLocalData(
           'orders',
-          response.data as unknown as Record<string, unknown> & { id: number }
+          { ...response.data, id: Number(response.data.id) } as unknown as Record<string, unknown> & { id: number }
         )
 
         return response.data
@@ -146,27 +157,32 @@ export const ordersService = {
     }
 
     const localOrders = await getLocalData('orders') as unknown as Order[]
-    const current = localOrders.find(order => order.id === id)
+
+    const current = localOrders.find(
+      order => Number(order.id) === Number(id)
+    )
 
     if (!current) {
       throw new Error('No se encontró el pedido en el almacenamiento local')
     }
 
-    const updated = { ...current, status }
+    const updated = {
+      ...current,
+      id: Number(current.id),
+      status: serverStatus
+    } as Order
 
     await saveLocalData(
       'orders',
       updated as unknown as Record<string, unknown> & { id: number }
     )
 
-    if (id > 0) {
-      await addOperation({
-        operationId: crypto.randomUUID(),
-        type: 'UPDATE',
-        entity: 'orders',
-        data: { id, status: serverStatus }
-      })
-    }
+    await addOperation({
+      operationId: crypto.randomUUID(),
+      type: 'UPDATE',
+      entity: 'orders',
+      data: { id: Number(id), status: serverStatus }
+    })
 
     return updated
   },
@@ -174,14 +190,21 @@ export const ordersService = {
   async cancel(id: number): Promise<Order> {
     if (id > 0 && navigator.onLine) {
       try {
-        const response = await api.delete<{ order: Order }>(`/orders/${id}`)
+        const response = await api.delete<{ order: Omit<Order, 'status'> & { status: string } }>(
+          `/orders/${id}`
+        )
+
+        const cancelledOrder = {
+          ...response.data.order,
+          status: 'Cancelado' as const
+        }
 
         await saveLocalData(
           'orders',
-          response.data.order as unknown as Record<string, unknown> & { id: number }
+          cancelledOrder as unknown as Record<string, unknown> & { id: number }
         )
 
-        return response.data.order
+        return cancelledOrder
       } catch (error) {
         if (navigator.onLine) {
           throw error
@@ -190,15 +213,15 @@ export const ordersService = {
     }
 
     const localOrders = await getLocalData('orders') as unknown as Order[]
-    const current = localOrders.find(order => order.id === id)
+    const current = localOrders.find(order => Number(order.id) === Number(id))
 
     if (!current) {
       throw new Error('No se encontró el pedido en el almacenamiento local')
     }
 
-    const updated = {
+    const updated: Order = {
       ...current,
-      status: 'Cancelado' as const
+      status: 'Cancelado'
     }
 
     await saveLocalData(
