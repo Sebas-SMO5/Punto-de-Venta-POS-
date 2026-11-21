@@ -1,5 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '../stores/auth'
+
+const auth = useAuthStore()
+const router = useRouter()
+
+function logout() {
+  auth.logout()
+  router.replace('/login')
+}
 
 const online = ref(navigator.onLine)
 
@@ -79,6 +89,14 @@ const menuItems = [
           <strong>{{ online ? 'Conectado' : 'Sin conexión' }}</strong>
           <small>Estado de red</small>
         </div>
+      </div>
+
+      <div class="sidebar-user">
+        <div>
+          <strong>{{ auth.user?.username }}</strong>
+          <small>{{ auth.user?.role === 'admin' ? 'Administrador' : auth.user?.role }}</small>
+        </div>
+        <button type="button" class="logout-btn" @click="logout">Salir</button>
       </div>
     </aside>
 

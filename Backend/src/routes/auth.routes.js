@@ -1,13 +1,10 @@
-
-import { Router } from 'express'
-import {
-  login,
-  getProfile
-} from '../controllers/auth.controller.js'
+const { Router } = require('express')
+const { login, getProfile } = require('../controllers/auth.controller')
+const { authenticate } = require('../middlewares/auth.middleware')
 
 const router = Router()
 
 router.post('/login', login)
-router.get('/profile', getProfile)
+router.get('/profile', authenticate, getProfile)
 
-export default router
+module.exports = router

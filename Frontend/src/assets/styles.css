@@ -836,3 +836,35 @@ td strong {
     grid-template-columns: 1fr;
   }
 }
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 10px 4px;
+}
+
+.sidebar-user strong {
+  font-size: 13px;
+}
+
+.sidebar-user small {
+  display: block;
+  margin-top: 2px;
+  color: #9ca9ba;
+  font-size: 12px;
+}
+
+.logout-btn {
+  padding: 6px 12px;
+  border: 1px solid #354153;
+  border-radius: 8px;
+  background: transparent;
+  color: #d6dde8;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.logout-btn:hover {
+  background: #354153;
+}

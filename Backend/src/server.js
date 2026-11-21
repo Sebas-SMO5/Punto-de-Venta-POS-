@@ -10,6 +10,7 @@ const categoriesRoutes = require('./routes/categories.routes')
 const inventoryRoutes = require('./routes/inventory.routes')
 const salesRoutes = require('./routes/sales.routes')
 const tablesRoutes = require('./routes/tables.routes')
+const authRoutes = require('./routes/auth.routes')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -35,6 +36,7 @@ app.get('/api/health', async (req, res) => {
   }
 })
 
+app.use('/api/auth', authRoutes)
 app.use('/api/products', productsRoutes)
 app.use('/api/orders', ordersRoutes)
 app.use('/api/categories', categoriesRoutes)
