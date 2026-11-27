@@ -32,3 +32,9 @@ services:
         value: 15m
       - key: REFRESH_TOKEN_DAYS
         value: "7"
+      # Primer administrador: se crea al arrancar si no existe.
+      # Render pide escribir la contraseña en el panel (no se guarda aquí).
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false

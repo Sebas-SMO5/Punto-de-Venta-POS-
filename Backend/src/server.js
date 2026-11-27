@@ -7,6 +7,7 @@ const pool = require('./config/database')
 const logger = require('./utils/logger')
 const { queue } = require('./utils/jobQueue')
 const { migrate } = require('./scripts/migrate')
+const { ensureInitialAdmin } = require('./scripts/ensure-admin')
 const sessionsRepository = require('./repositories/sessions.repository')
 
 async function start() {
@@ -17,6 +18,9 @@ async function start() {
 
   // Deja la base de datos al día antes de atender peticiones
   await migrate({ silent: true })
+
+  // Crea el primer administrador si se configuró ADMIN_USERNAME/ADMIN_PASSWORD
+  await ensureInitialAdmin()
 
   // Cada hora se borran de la base los refresh tokens vencidos
   queue.register('cleanup-refresh-tokens', async () => {
