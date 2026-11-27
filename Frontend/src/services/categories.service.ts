@@ -1,147 +1,94 @@
-import { api } from './api'
-import {
-  getLocalData,
-  saveLocalData,
-  saveManyLocalData,
-  deleteLocalData
-} from '../offline/db'
-import {
-  addOperation,
-  getAllOperations,
-  updateOperation,
-  deleteOperation
-} from '../offline/queue'
+// Servicio de categorías con soporte OFFLINE (misma idea que productos).
+import { api, isConnectionError } from './api'
+import { deleteLocalData, readStore, writeRecord, writeRecords } from '../offline/db'
+import { addOperation, deleteOperation, getAllOperations, updateOperation } from '../offline/queue'
 
 export interface Category {
   id: number
   name: string
   description: string
   active: boolean
+  version?: number
   created_at?: string
+}
+
+export type CategoryInput = Pick<Category, 'name' | 'description' | 'active'>
+
+const getLocalCategories = () => readStore<Category>('categories')
+
+async function findPending(id: number, type: 'CREATE' | 'UPDATE' | 'DELETE') {
+  const operations = await getAllOperations()
+  return operations.find(
+    (op) => op.entity === 'categories' && op.type === type && op.data.id === id && op.status === 'pending',
+  )
 }
 
 export const categoriesService = {
   async getAll(): Promise<Category[]> {
+    if (!navigator.onLine) return getLocalCategories()
+
     try {
-      if (!navigator.onLine) {
-        return await getLocalData('categories') as unknown as Category[]
-      }
-
       const response = await api.get<Category[]>('/categories')
-
-      await saveManyLocalData(
-        'categories',
-        response.data as unknown as (Record<string, unknown> & { id: number })[]
-      )
-
+      await writeRecords('categories', response.data)
       return response.data
     } catch (error) {
-      if (!navigator.onLine) {
-        return await getLocalData('categories') as unknown as Category[]
-      }
-
+      if (isConnectionError(error)) return getLocalCategories()
       throw error
     }
   },
 
-  async create(
-    data: Omit<Category, 'id' | 'created_at'>
-  ): Promise<Category> {
+  async create(data: CategoryInput): Promise<Category> {
     if (navigator.onLine) {
       try {
         const response = await api.post<Category>('/categories', data)
-
-        await saveLocalData(
-          'categories',
-          response.data as unknown as Record<string, unknown> & { id: number }
-        )
-
+        await writeRecord('categories', response.data)
         return response.data
       } catch (error) {
-        if (navigator.onLine) throw error
+        if (!isConnectionError(error)) throw error
       }
     }
 
-    const category: Category = {
-      id: -Date.now(),
-      ...data
-    }
-
-    await saveLocalData(
-      'categories',
-      category as unknown as Record<string, unknown> & { id: number }
-    )
+    const category: Category = { id: -Date.now(), ...data, version: 1 }
+    await writeRecord('categories', category)
 
     await addOperation({
       operationId: crypto.randomUUID(),
       type: 'CREATE',
       entity: 'categories',
-      data: category as unknown as Record<string, unknown>
+      data: { ...category },
     })
 
     return category
   },
 
-  async update(
-    id: number,
-    data: Omit<Category, 'id' | 'created_at'>
-  ): Promise<Category> {
+  async update(id: number, data: CategoryInput, expectedVersion?: number): Promise<Category> {
     if (id > 0 && navigator.onLine) {
       try {
-        const response = await api.put<Category>(`/categories/${id}`, data)
-
-        await saveLocalData(
-          'categories',
-          response.data as unknown as Record<string, unknown> & { id: number }
-        )
-
+        const response = await api.put<Category>(`/categories/${id}`, { ...data, expectedVersion })
+        await writeRecord('categories', response.data)
         return response.data
       } catch (error) {
-        if (navigator.onLine) throw error
+        if (!isConnectionError(error)) throw error
       }
     }
 
-    const category: Category = {
-      id,
-      ...data
-    }
+    const category: Category = { id, ...data, version: expectedVersion }
+    await writeRecord('categories', category)
 
-    await saveLocalData(
-      'categories',
-      category as unknown as Record<string, unknown> & { id: number }
-    )
-
-    const operations = await getAllOperations()
-
-    const pendingCreate = operations.find(operation =>
-      operation.entity === 'categories' &&
-      operation.type === 'CREATE' &&
-      operation.data.id === id
-    )
+    const pendingCreate = await findPending(id, 'CREATE')
+    const pendingUpdate = await findPending(id, 'UPDATE')
 
     if (pendingCreate?.id !== undefined) {
-      await updateOperation(pendingCreate.id, {
-        data: category as unknown as Record<string, unknown>
-      })
+      await updateOperation(pendingCreate.id, { data: { ...pendingCreate.data, ...data } })
+    } else if (pendingUpdate?.id !== undefined) {
+      await updateOperation(pendingUpdate.id, { data: { ...pendingUpdate.data, ...data } })
     } else {
-      const pendingUpdate = operations.find(operation =>
-        operation.entity === 'categories' &&
-        operation.type === 'UPDATE' &&
-        operation.data.id === id
-      )
-
-      if (pendingUpdate?.id !== undefined) {
-        await updateOperation(pendingUpdate.id, {
-          data: category as unknown as Record<string, unknown>
-        })
-      } else {
-        await addOperation({
-          operationId: crypto.randomUUID(),
-          type: 'UPDATE',
-          entity: 'categories',
-          data: category as unknown as Record<string, unknown>
-        })
-      }
+      await addOperation({
+        operationId: crypto.randomUUID(),
+        type: 'UPDATE',
+        entity: 'categories',
+        data: { ...data, id, expectedVersion },
+      })
     }
 
     return category
@@ -151,75 +98,45 @@ export const categoriesService = {
     if (id > 0 && navigator.onLine) {
       try {
         await api.delete(`/categories/${id}`)
-
-        const categories = await getLocalData('categories')
-        const category = categories.find(item => item.id === id)
-
-        if (category) {
-          await saveLocalData('categories', {
-            ...category,
-            active: false
-          })
-        }
-
+        const category = (await getLocalCategories()).find((item) => item.id === id)
+        if (category) await writeRecord('categories', { ...category, active: false })
         return
       } catch (error) {
-        if (navigator.onLine) throw error
+        if (!isConnectionError(error)) throw error
       }
     }
 
-    const categories = await getLocalData('categories')
-    const category = categories.find(item => item.id === id)
+    const category = (await getLocalCategories()).find((item) => item.id === id)
 
     if (!category) {
       throw new Error('No se encontró la categoría')
     }
 
-    const operations = await getAllOperations()
-
-    const pendingCreate = operations.find(operation =>
-      operation.entity === 'categories' &&
-      operation.type === 'CREATE' &&
-      operation.data.id === id
-    )
+    const pendingCreate = await findPending(id, 'CREATE')
 
     if (pendingCreate?.id !== undefined) {
-      await deleteOperation(pendingCreate.id)
-
-      const relatedOperations = operations.filter(operation =>
-        operation.entity === 'categories' &&
-        operation.data.id === id &&
-        operation.id !== pendingCreate.id
+      // Creada y desactivada sin conexión: se eliminan todas sus operaciones
+      const related = (await getAllOperations()).filter(
+        (op) => op.entity === 'categories' && op.data.id === id,
       )
 
-      for (const operation of relatedOperations) {
-        if (operation.id !== undefined) {
-          await deleteOperation(operation.id)
-        }
+      for (const op of related) {
+        if (op.id !== undefined) await deleteOperation(op.id)
       }
 
       await deleteLocalData('categories', id)
       return
     }
 
-    await saveLocalData('categories', {
-      ...category,
-      active: false
-    })
+    await writeRecord('categories', { ...category, active: false })
 
-    const pendingDelete = operations.find(operation =>
-      operation.entity === 'categories' &&
-      operation.type === 'DELETE' &&
-      operation.data.id === id
-    )
-
-    if (!pendingDelete) {
+    if (!(await findPending(id, 'DELETE'))) {
       await addOperation({
         operationId: crypto.randomUUID(),
         type: 'DELETE',
         entity: 'categories',
-        data: { id }
+        data: { id },
       })
     }
-  }
+  },
 }

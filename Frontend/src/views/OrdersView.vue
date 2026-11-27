@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import type { ServerOrder, ServerOrderItem } from '../types/models'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api } from '../services/api'
+import { api, errorMessage } from '../services/api'
 import { ordersService } from '../services/orders.service'
 import { getLocalData, saveLocalData } from '../offline/db'
 import { addOperation } from '../offline/queue'
@@ -115,12 +116,12 @@ async function loadOrders() {
   try {
     const response = await ordersService.getAll()
 
-    orders.value = response.map((order: any) => ({
+    orders.value = response.map((order: ServerOrder) => ({
       id: Number(order.id),
       order_number: order.order_number || `PED-${order.id}`,
       table_id: Number(order.table_id ?? order.tableNumber ?? 0),
       table_number: order.table_number ?? order.tableNumber ?? null,
-      items: (order.items || []).map((item: any) => ({
+      items: (order.items || []).map((item: ServerOrderItem) => ({
         id: Number(item.id ?? item.productId ?? item.product_id ?? 0),
         productId: Number(item.productId ?? item.product_id ?? 0),
         name: item.name || item.product_name || 'Producto',
@@ -214,9 +215,9 @@ async function updateStatus(
         ? 'Pedido actualizado correctamente.'
         : 'Pedido actualizado y guardado localmente. Se sincronizará cuando vuelva internet.'
     )
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al actualizar pedido:', error)
-    alert(error.response?.data?.mensaje || error.message || 'No se pudo actualizar el pedido.')
+    alert(errorMessage(error, 'No se pudo actualizar el pedido.'))
   }
 }
 
@@ -324,11 +325,10 @@ async function registerSale() {
     alert(
       `Venta guardada correctamente sin conexión.\n\nVenta: ${localSale.sale_number}\nPedido: ${order.order_number}\nTotal: ${formatCurrency(order.total)}\n\nSe sincronizará cuando vuelva internet.`
     )
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al registrar venta:', error)
     alert(
-      error.response?.data?.mensaje ||
-      'No se pudo registrar la venta.'
+      errorMessage(error, 'No se pudo registrar la venta.')
     )
   } finally {
     isRegistering.value = false

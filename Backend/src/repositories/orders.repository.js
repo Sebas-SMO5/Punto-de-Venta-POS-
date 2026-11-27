@@ -1,4 +1,6 @@
 const pool = require('../config/database')
+const AppError = require('../utils/AppError')
+const { evaluateTransition, canModifyOrder } = require('../domain/orderRules')
 
 async function getOrderById(db, id) {
   const result = await db.query(`
@@ -96,9 +98,7 @@ async function create(data) {
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
       if (!uuidRegex.test(data.localId)) {
-        const error = new Error('El identificador local del pedido no es válido')
-        error.status = 400
-        throw error
+        throw AppError.badRequest('El identificador local del pedido no es válido')
       }
 
       const existingOrder = await client.query(
@@ -122,24 +122,16 @@ async function create(data) {
     )
 
     if (!tableResult.rows.length) {
-      const error = new Error('La mesa no existe o está inactiva')
-      error.status = 400
-      throw error
+      throw AppError.badRequest('La mesa no existe o está inactiva')
     }
 
-    const userResult = data.userId
-      ? await client.query(
-          'SELECT id FROM users WHERE id = $1 AND active = TRUE',
-          [data.userId]
-        )
-      : await client.query(
-          'SELECT id FROM users WHERE active = TRUE ORDER BY id LIMIT 1'
-        )
+    const userResult = await client.query(
+      'SELECT id FROM users WHERE id = $1 AND active = TRUE',
+      [data.userId]
+    )
 
     if (!userResult.rows.length) {
-      const error = new Error('No hay un usuario activo para registrar el pedido')
-      error.status = 400
-      throw error
+      throw AppError.badRequest('El usuario que registra el pedido no está activo')
     }
 
     const productIds = data.items.map(item => item.productId)
@@ -152,9 +144,7 @@ async function create(data) {
     )
 
     if (productsResult.rows.length !== new Set(productIds).size) {
-      const error = new Error('Uno o más productos no existen o están inactivos')
-      error.status = 400
-      throw error
+      throw AppError.badRequest('Uno o más productos no existen o están inactivos')
     }
 
     const products = new Map(
@@ -263,14 +253,19 @@ async function create(data) {
   }
 }
 
-async function updateStatus(id, status) {
+// Cambia el estado de un pedido respetando:
+//  1. La propiedad del recurso (un mesero solo cambia sus pedidos).
+//  2. La máquina de estados (los pedidos solo avanzan; ver domain/orderRules.js).
+// Si el cambio llega tarde (el pedido ya avanzó), responde 409 con el
+// pedido tal como está en el servidor: el servidor gana.
+async function updateStatus(id, status, user) {
   const client = await pool.connect()
 
   try {
     await client.query('BEGIN')
 
     const current = await client.query(
-      `SELECT id, status, table_id
+      `SELECT id, status, table_id, user_id
        FROM orders
        WHERE id = $1
        FOR UPDATE`,
@@ -278,14 +273,28 @@ async function updateStatus(id, status) {
     )
 
     if (!current.rows.length) {
-      await client.query('ROLLBACK')
-      return null
+      throw AppError.notFound('Pedido no encontrado')
     }
 
-    if (['completed', 'cancelled'].includes(current.rows[0].status)) {
-      const error = new Error('No se puede modificar un pedido finalizado')
-      error.status = 400
-      throw error
+    const order = current.rows[0]
+
+    if (!canModifyOrder(user, order)) {
+      throw AppError.forbidden('Solo puede modificar sus propios pedidos')
+    }
+
+    const decision = evaluateTransition(order.status, status)
+
+    if (decision === 'noop') {
+      const unchanged = await getOrderById(client, id)
+      await client.query('COMMIT')
+      return unchanged
+    }
+
+    if (decision === 'conflict') {
+      throw AppError.conflict(
+        `El pedido ya está en estado "${order.status}" y no puede pasar a "${status}"`,
+        { reason: 'INVALID_TRANSITION', server: await getOrderById(client, id) }
+      )
     }
 
     await client.query(`
@@ -301,22 +310,22 @@ async function updateStatus(id, status) {
         WHERE table_id = $1
           AND status NOT IN ('completed', 'cancelled')
           AND id <> $2
-      `, [current.rows[0].table_id, id])
+      `, [order.table_id, id])
 
       if (!activeOrders.rows.length) {
         await client.query(`
           UPDATE restaurant_tables
           SET status = 'available'
           WHERE id = $1
-        `, [current.rows[0].table_id])
+        `, [order.table_id])
       }
     }
 
-    const order = await getOrderById(client, id)
+    const updated = await getOrderById(client, id)
 
     await client.query('COMMIT')
 
-    return order
+    return updated
   } catch (error) {
     await client.query('ROLLBACK')
     throw error

@@ -2,10 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { tablesService, type RestaurantTable } from '../services/tables.service'
 import { ordersService } from '../services/orders.service'
-import type { Order } from '../stores/orders'
+import type { ServerOrder } from '../types/models'
 
 interface TableWithOrders extends RestaurantTable {
-  orders: Order[]
+  orders: ServerOrder[]
 }
 
 const tables = ref<TableWithOrders[]>([])
@@ -43,27 +43,15 @@ function statusLabel(status: string) {
   return labels[status] || status
 }
 
-function getOrderTableId(order: Order): number {
-  const data = order as unknown as Record<string, unknown>
-
-  return Number(
-    data.table_id ??
-    data.tableId ??
-    data.tableNumber ??
-    data.table_number
-  )
+function getOrderTableId(order: ServerOrder): number {
+  return Number(order.table_id ?? order.table_number)
 }
 
-function getOrderNumber(order: Order): string | number {
-  const data = order as unknown as Record<string, unknown>
-
-  return (
-    String(data.order_number ?? data.orderNumber ?? '') ||
-    order.id
-  )
+function getOrderNumber(order: ServerOrder): string | number {
+  return order.order_number || order.id
 }
 
-function isActiveOrder(order: Order) {
+function isActiveOrder(order: ServerOrder) {
   return ![
     'Entregado',
     'Cancelado',
@@ -109,11 +97,6 @@ function tableTotal(table: TableWithOrders) {
 }
 
 async function completeOrder(orderId: number) {
-  if (!navigator.onLine) {
-    alert('Para entregar un pedido debes tener conexión a internet.')
-    return
-  }
-
   const confirmed = window.confirm(
     '¿Deseas marcar este pedido como entregado?'
   )
@@ -131,11 +114,6 @@ async function completeOrder(orderId: number) {
 }
 
 async function cancelOrder(orderId: number) {
-  if (!navigator.onLine) {
-    alert('Para cancelar un pedido debes tener conexión a internet.')
-    return
-  }
-
   const confirmed = window.confirm(
     '¿Deseas cancelar este pedido?'
   )
@@ -245,14 +223,14 @@ onMounted(loadTables)
                 >
                   <button
                     class="table-action"
-                    @click="completeOrder(order.id)"
+                    @click="completeOrder(Number(order.id))"
                   >
                     Marcar entregado
                   </button>
 
                   <button
                     class="table-action delete-action"
-                    @click="cancelOrder(order.id)"
+                    @click="cancelOrder(Number(order.id))"
                   >
                     Cancelar
                   </button>

@@ -1,6 +1,8 @@
 
 import { api } from './api'
-import { getLocalData, saveManyLocalData } from '../offline/db'
+
+import type { ServerOrder } from '../types/models'
+import { readStore, writeRecords } from '../offline/db'
 
 export interface RestaurantTable {
   id: number
@@ -8,26 +10,24 @@ export interface RestaurantTable {
   capacity: number
   status: string
   active: boolean
+  // Pedidos activos de la mesa (los incluye la API)
+  orders?: ServerOrder[]
 }
 
 export const tablesService = {
   async getAll(): Promise<RestaurantTable[]> {
     try {
       if (!navigator.onLine) {
-        return await getLocalData('tables') as unknown as RestaurantTable[]
+        return await readStore<RestaurantTable>('tables')
       }
 
       const response = await api.get<RestaurantTable[]>('/tables')
-
-      await saveManyLocalData(
-        'tables',
-        response.data as unknown as (Record<string, unknown> & { id: number })[]
-      )
+      await writeRecords('tables', response.data)
 
       return response.data
     } catch (error) {
       if (!navigator.onLine) {
-        return await getLocalData('tables') as unknown as RestaurantTable[]
+        return await readStore<RestaurantTable>('tables')
       }
 
       throw error

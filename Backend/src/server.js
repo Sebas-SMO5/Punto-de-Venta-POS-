@@ -1,66 +1,45 @@
-require('dotenv').config()
-
-const express = require('express')
-const cors = require('cors')
+// Punto de arranque del backend: revisa la configuración, aplica las
+// migraciones pendientes, inicia las tareas periódicas y pone a escuchar
+// el servidor en el puerto configurado.
+const config = require('./config/env')
+const app = require('./app')
 const pool = require('./config/database')
+const logger = require('./utils/logger')
+const { queue } = require('./utils/jobQueue')
+const { migrate } = require('./scripts/migrate')
+const sessionsRepository = require('./repositories/sessions.repository')
 
-const productsRoutes = require('./routes/products.routes')
-const ordersRoutes = require('./routes/orders.routes')
-const categoriesRoutes = require('./routes/categories.routes')
-const inventoryRoutes = require('./routes/inventory.routes')
-const salesRoutes = require('./routes/sales.routes')
-const tablesRoutes = require('./routes/tables.routes')
-const authRoutes = require('./routes/auth.routes')
+async function start() {
+  config.assertConfig()
 
-const app = express()
-const PORT = process.env.PORT || 3000
+  await pool.query('SELECT 1')
+  logger.info('Conexión establecida con PostgreSQL')
 
-app.use(cors())
-app.use(express.json())
+  // Deja la base de datos al día antes de atender peticiones
+  await migrate({ silent: true })
 
-app.get('/api/health', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT NOW() AS fecha')
+  // Cada hora se borran de la base los refresh tokens vencidos
+  queue.register('cleanup-refresh-tokens', async () => {
+    const deleted = await sessionsRepository.deleteExpired()
+    if (deleted) logger.info('Tokens vencidos eliminados', { deleted })
+  })
+  setInterval(() => queue.add('cleanup-refresh-tokens'), 60 * 60 * 1000).unref()
 
-    res.json({
-      mensaje: 'Backend del POS funcionando correctamente',
-      estado: 'OK',
-      database: 'Conectada',
-      fecha: result.rows[0].fecha
-    })
-  } catch (error) {
-    res.status(500).json({
-      mensaje: 'Error al conectar con PostgreSQL',
-      estado: 'ERROR'
-    })
+  const server = app.listen(config.port, () => {
+    logger.info(`Backend ejecutándose en http://localhost:${config.port}`)
+  })
+
+  // Apagado ordenado (Ctrl+C o cuando la nube reinicia el servicio)
+  const shutdown = () => {
+    logger.info('Cerrando el servidor...')
+    server.close(() => pool.end().finally(() => process.exit(0)))
   }
+
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+}
+
+start().catch((error) => {
+  logger.error('No se pudo iniciar el servidor', { error: error.message })
+  process.exit(1)
 })
-
-app.use('/api/auth', authRoutes)
-app.use('/api/products', productsRoutes)
-app.use('/api/orders', ordersRoutes)
-app.use('/api/categories', categoriesRoutes)
-app.use('/api/inventory', inventoryRoutes)
-app.use('/api/sales', salesRoutes)
-app.use('/api/tables', tablesRoutes)
-
-app.use((err, req, res, next) => {
-  console.error(err.message)
-
-  res.status(err.status || 500).json({
-    mensaje: err.status ? err.message : 'Error interno del servidor'
-  })
-})
-
-pool.query('SELECT NOW()')
-  .then(() => {
-    console.log('Conexión establecida con PostgreSQL')
-
-    app.listen(PORT, () => {
-      console.log(`Backend ejecutándose en http://localhost:${PORT}`)
-    })
-  })
-  .catch((error) => {
-    console.error('No se pudo conectar con PostgreSQL:', error.message)
-    process.exit(1)
-  })

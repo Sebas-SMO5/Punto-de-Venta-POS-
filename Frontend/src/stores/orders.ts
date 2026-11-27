@@ -1,5 +1,11 @@
+// Tienda (Pinia) de pedidos, normalizada por id, con estados explícitos de
+// carga, error y caché. Los datos vienen de ordersService, que ya sabe
+// leer de la API o, sin conexión, de IndexedDB.
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
+import { computed, ref } from 'vue'
+import { ordersService } from '../services/orders.service'
+import { errorMessage } from '../services/api'
+import type { ServerOrder } from '../types/models'
 
 export interface OrderItem {
   productId: number
@@ -8,106 +14,94 @@ export interface OrderItem {
   quantity: number
 }
 
+export type OrderStatusLabel = 'Pendiente' | 'En preparación' | 'Listo' | 'Entregado' | 'Cancelado'
+
+// Pedido en el formato que usan las pantallas
 export interface Order {
   id: number
   tableNumber: number
   items: OrderItem[]
   total: number
-  status: 'Pendiente' | 'En preparación' | 'Entregado' | 'Cancelado'
+  status: OrderStatusLabel
   createdAt: string
 }
 
-const STORAGE_KEY = 'restaurante-pos-orders'
+export const STATUS_LABELS: Record<string, OrderStatusLabel> = {
+  pending: 'Pendiente',
+  preparing: 'En preparación',
+  ready: 'Listo',
+  completed: 'Entregado',
+  cancelled: 'Cancelado',
+}
 
-function loadOrders(): Order[] {
-  try {
-    const savedOrders = localStorage.getItem(STORAGE_KEY)
+const CACHE_TTL_MS = 30 * 1000
 
-    if (savedOrders !== null) {
-      const parsedOrders: unknown = JSON.parse(savedOrders)
-
-      if (Array.isArray(parsedOrders)) {
-        return parsedOrders as Order[]
-      }
-    }
-  } catch (error) {
-    console.error('Error al cargar los pedidos:', error)
+export function toOrder(raw: ServerOrder): Order {
+  return {
+    id: Number(raw.id),
+    tableNumber: Number(raw.table_number ?? raw.table_id ?? 0),
+    total: Number(raw.total ?? 0),
+    status: STATUS_LABELS[raw.status] ?? 'Pendiente',
+    createdAt: raw.created_at ?? new Date().toISOString(),
+    items: (raw.items ?? []).map((item) => ({
+      productId: Number(item.productId),
+      name: item.name,
+      price: Number(item.price),
+      quantity: Number(item.quantity),
+    })),
   }
-
-  return []
 }
 
 export const useOrdersStore = defineStore('orders', () => {
-  const orders = ref<Order[]>(loadOrders())
+  const byId = ref<Record<number, Order>>({})
+  const ids = ref<number[]>([])
+  const loading = ref(false)
+  const error = ref('')
+  const lastLoadedAt = ref<number | null>(null)
 
-  watch(
-    orders,
-    (newOrders) => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(newOrders))
-      } catch (error) {
-        console.error('Error al guardar los pedidos:', error)
-      }
-    },
-    { deep: true },
+  const orders = computed(() =>
+    ids.value.map((id) => byId.value[id]).filter((o): o is Order => o !== undefined),
   )
 
-  function createOrder(
-    tableNumber: number,
-    items: OrderItem[],
-  ): Order {
-    const id =
-      orders.value.length > 0
-        ? Math.max(...orders.value.map((order) => order.id)) + 1
-        : 1
+  const activeOrders = computed(() =>
+    orders.value.filter((order) => !['Entregado', 'Cancelado'].includes(order.status)),
+  )
 
-    const newOrder: Order = {
-      id,
-      tableNumber,
-      items: items.map((item) => ({ ...item })),
-      total: items.reduce(
-        (sum, item) => sum + item.price * item.quantity,
-        0,
-      ),
-      status: 'Pendiente',
-      createdAt: new Date().toISOString(),
+  async function load(force = false): Promise<void> {
+    const fresh = lastLoadedAt.value !== null && Date.now() - lastLoadedAt.value < CACHE_TTL_MS
+
+    if (!force && fresh) return
+
+    loading.value = true
+    error.value = ''
+
+    try {
+      const list = (await ordersService.getAllRaw()).map(toOrder)
+      const map: Record<number, Order> = {}
+      for (const order of list) map[order.id] = order
+      byId.value = map
+      ids.value = list.map((order) => order.id)
+      lastLoadedAt.value = Date.now()
+    } catch (err) {
+      error.value = errorMessage(err, 'No se pudieron cargar los pedidos')
+    } finally {
+      loading.value = false
     }
-
-    orders.value.push(newOrder)
-
-    return newOrder
   }
 
   function getOrdersByTable(tableNumber: number): Order[] {
-    return orders.value.filter(
-      (order) =>
-        order.tableNumber === tableNumber &&
-        order.status !== 'Cancelado' &&
-        order.status !== 'Entregado',
-    )
-  }
-
-  function cancelOrder(orderId: number) {
-    const order = orders.value.find((item) => item.id === orderId)
-
-    if (order) {
-      order.status = 'Cancelado'
-    }
-  }
-
-  function completeOrder(orderId: number) {
-    const order = orders.value.find((item) => item.id === orderId)
-
-    if (order) {
-      order.status = 'Entregado'
-    }
+    return activeOrders.value.filter((order) => order.tableNumber === tableNumber)
   }
 
   return {
+    byId,
+    ids,
     orders,
-    createOrder,
+    activeOrders,
+    loading,
+    error,
+    lastLoadedAt,
+    load,
     getOrdersByTable,
-    cancelOrder,
-    completeOrder,
   }
 })

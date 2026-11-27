@@ -1,8 +1,12 @@
-const express = require('express')
-const router = express.Router()
-const tablesController = require('../controllers/tables.controller')
+// Rutas de mesas (/api/tables). Todos los roles pueden consultarlas.
+const { Router } = require('express')
+const controller = require('../controllers/tables.controller')
+const validate = require('../middlewares/validate.middleware')
+const { idParam } = require('../validators/schemas')
 
-router.get('/', tablesController.getTables)
-router.get('/:id', tablesController.getTableById)
+const router = Router()
+
+router.get('/', controller.getTables)
+router.get('/:id', validate({ params: idParam }), controller.getTableById)
 
 module.exports = router

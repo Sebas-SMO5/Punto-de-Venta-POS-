@@ -1,109 +1,36 @@
+// Lógica de negocio de productos. Los datos ya llegan validados por Zod;
+// aquí van las reglas del negocio y los errores "no encontrado".
 const productsRepository = require('../repositories/products.repository')
-
-function validateStock(value, fieldName) {
-  const number = Number(value)
-
-  if (!Number.isFinite(number) || number < 0) {
-    const error = new Error(`${fieldName} debe ser un número mayor o igual a cero`)
-    error.status = 400
-    throw error
-  }
-
-  return number
-}
-
-function validateProduct(data) {
-  if (
-    typeof data.name !== 'string' ||
-    !data.name.trim() ||
-    typeof data.category !== 'string' ||
-    !data.category.trim() ||
-    !Number.isFinite(Number(data.price)) ||
-    Number(data.price) <= 0 ||
-    (data.available !== undefined && typeof data.available !== 'boolean')
-  ) {
-    const error = new Error('Los datos del producto no son válidos')
-    error.status = 400
-    throw error
-  }
-
-  data.price = Number(data.price)
-
-  if (data.current_stock !== undefined) {
-    data.current_stock = validateStock(
-      data.current_stock,
-      'El stock inicial'
-    )
-  }
-
-  if (data.minimum_stock !== undefined) {
-    data.minimum_stock = validateStock(
-      data.minimum_stock,
-      'El stock mínimo'
-    )
-  }
-}
+const AppError = require('../utils/AppError')
 
 async function getAll() {
   return productsRepository.getAll()
 }
 
 async function getById(id) {
-  return productsRepository.getById(id)
+  const product = await productsRepository.getById(id)
+
+  if (!product) throw AppError.notFound('Producto no encontrado')
+
+  return product
 }
 
 async function create(data) {
-  validateProduct(data)
-
-  data.current_stock = data.current_stock ?? 0
-  data.minimum_stock = data.minimum_stock ?? 0
-
   return productsRepository.create(data)
 }
 
 async function update(id, data) {
-  const current = await productsRepository.getById(id)
+  const product = await productsRepository.update(id, data)
 
-  if (!current) {
-    return null
-  }
+  if (!product) throw AppError.notFound('Producto no encontrado')
 
-  validateProduct({
-    name: data.name ?? current.name,
-    category: data.category ?? current.category,
-    price: Number(data.price ?? current.price),
-    available: data.available ?? current.available
-  })
-
-  if (data.minimum_stock !== undefined) {
-    data.minimum_stock = validateStock(
-      data.minimum_stock,
-      'El stock mínimo'
-    )
-  }
-
-  if (data.current_stock !== undefined) {
-    data.current_stock = validateStock(
-      data.current_stock,
-      'El stock actual'
-    )
-
-    const error = new Error(
-      'El stock actual no se puede modificar desde la edición del producto'
-    )
-    error.status = 400
-    throw error
-  }
-
-  if (data.price !== undefined) {
-    data.price = Number(data.price)
-  }
-
-  return productsRepository.update(id, data)
+  return product
 }
 
 async function remove(id) {
-  return productsRepository.delete(id)
+  const deleted = await productsRepository.delete(id)
+
+  if (!deleted) throw AppError.notFound('Producto no encontrado')
 }
 
 module.exports = {

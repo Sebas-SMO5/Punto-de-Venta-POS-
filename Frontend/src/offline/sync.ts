@@ -1,489 +1,322 @@
+// SINCRONIZADOR: envía al servidor las operaciones que se hicieron sin
+// conexión, en el mismo orden en que ocurrieron, y aplica las reglas de
+// conflicto de syncRules.ts.
+//
+// Usa el mismo cliente "api" que el resto de la app, así cada petición
+// lleva el Access Token y se renueva la sesión si hace falta.
+import axios from 'axios'
+import { api } from '../services/api'
+import { getAccessToken, refreshSession } from '../services/session'
+import type { ApiError, ServerOrder } from '../types/models'
 import {
+  addSyncLog,
+  deleteLocalData,
   getDatabase,
-  type PendingOperation,
   saveLocalData,
-  deleteLocalData
+  type LocalRecord,
+  type PendingOperation,
+  type SyncEntity,
 } from './db'
-
 import {
-  getPendingOperations,
+  deleteOperation,
   getAllOperations,
+  getOperation,
+  getPendingOperations,
   updateOperation,
-  deleteOperation
 } from './queue'
-
-const API_URL = (
-  import.meta.env.VITE_API_URL || 'http://localhost:3000/api'
-).replace(/\/$/, '')
+import { backoffDelay, decide, waitingForDependency, type ServerFailure } from './syncRules'
 
 let synchronizing = false
 let syncInterval: number | undefined
 
-const getEndpoint = (entity: PendingOperation['entity']): string => {
-  const endpoints = {
-    products: 'products',
-    categories: 'categories',
-    tables: 'tables',
-    orders: 'orders',
-    sales: 'sales'
-  }
+export const SYNC_EVENT = 'pos-sync-changed'
 
-  return `${API_URL}/${endpoints[entity]}`
+function notifyChange(): void {
+  window.dispatchEvent(new CustomEvent(SYNC_EVENT))
 }
 
-const readResponse = async (response: Response): Promise<any> => {
-  const text = await response.text()
+// ---------- utilidades ----------
 
-  if (!text) return null
+function pick(data: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
 
-  try {
-    return JSON.parse(text)
-  } catch {
-    return text
+  for (const key of keys) {
+    if (data[key] !== undefined) result[key] = data[key]
+  }
+
+  return result
+}
+
+function toLocalRecord(value: unknown): LocalRecord | null {
+  if (typeof value !== 'object' || value === null) return null
+
+  const record = value as Record<string, unknown>
+  const id = Number(record.id)
+
+  if (!Number.isSafeInteger(id)) return null
+
+  const normalized: LocalRecord = { ...record, id }
+
+  // PostgreSQL devuelve los números decimales como texto: se convierten
+  for (const key of ['price', 'current_stock', 'minimum_stock', 'total']) {
+    if (typeof normalized[key] === 'string') normalized[key] = Number(normalized[key])
+  }
+
+  return normalized
+}
+
+async function saveServerRecord(store: SyncEntity, value: unknown): Promise<void> {
+  const record = toLocalRecord(value)
+  if (record) await saveLocalData(store, record)
+}
+
+// Cuando un registro creado sin conexión recibe su id real del servidor,
+// se actualizan las demás operaciones de la cola que usaban el id temporal.
+async function replaceTemporaryId(
+  entity: SyncEntity,
+  localId: number,
+  serverId: number,
+  skipId: number | undefined,
+): Promise<void> {
+  for (const pending of await getAllOperations()) {
+    if (pending.id === undefined || pending.id === skipId) continue
+
+    const data = { ...pending.data }
+    let changed = false
+
+    if (pending.entity === entity && data.id === localId) {
+      data.id = serverId
+      changed = true
+    }
+
+    if (entity === 'orders' && pending.entity === 'sales' && data.orderId === localId) {
+      data.orderId = serverId
+      changed = true
+    }
+
+    if (entity === 'products' && pending.entity === 'orders' && Array.isArray(data.items)) {
+      data.items = data.items.map((item: unknown) => {
+        const line = item as { productId?: unknown }
+        if (line.productId === localId) {
+          changed = true
+          return { ...line, productId: serverId }
+        }
+        return item
+      })
+    }
+
+    if (changed) await updateOperation(pending.id, { data })
   }
 }
 
-const sendProductOperation = async (
-  operation: PendingOperation
-): Promise<void> => {
-  const endpoint = getEndpoint('products')
-  const data = { ...operation.data }
-  const id = data.id
+function toFailure(error: unknown): ServerFailure {
+  if (axios.isAxiosError(error)) {
+    const body = error.response?.data as ApiError | undefined
 
-  if (operation.type === 'CREATE') {
-    delete data.id
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(data)
-    })
-
-    const result = await readResponse(response)
-
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al crear el producto`
-      )
+    return {
+      status: error.response?.status,
+      reason: body?.detalles?.reason,
+      message: body?.mensaje ?? error.message,
+      server: body?.detalles?.server,
     }
-
-    const product = result?.product || result
-    const productId = Number(product?.id)
-
-    if (!product || !Number.isSafeInteger(productId) || productId <= 0) {
-      throw new Error('El servidor no devolvió el producto creado')
-    }
-
-    if (typeof id === 'number') {
-      await deleteLocalData('products', id)
-    }
-
-    await saveLocalData('products', {
-      ...product,
-      id: productId
-    } as Record<string, unknown> & { id: number })
-
-    return
   }
 
-  if (typeof id !== 'number' || id <= 0) {
-    throw new Error('El identificador del producto no es válido')
-  }
+  return { status: 0, message: error instanceof Error ? error.message : 'Error desconocido' }
+}
 
-  if (operation.type === 'UPDATE') {
-    delete data.id
+// ---------- envío por tipo de dato ----------
 
-    const response = await fetch(`${endpoint}/${id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(data)
-    })
+const PRODUCT_FIELDS = ['name', 'category', 'price', 'description', 'available', 'minimum_stock']
+const CATEGORY_FIELDS = ['name', 'description', 'active']
 
-    const result = await readResponse(response)
+async function sendProduct(op: PendingOperation): Promise<void> {
+  const id = Number(op.data.id)
 
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al actualizar el producto`
-      )
-    }
-
-    const product = result?.product || result
-
-    if (product && Number.isSafeInteger(Number(product.id))) {
-      await saveLocalData('products', {
-        ...product,
-        id: Number(product.id)
-      } as Record<string, unknown> & { id: number })
-    }
-
-    return
-  }
-
-  if (operation.type === 'DELETE') {
-    const response = await fetch(`${endpoint}/${id}`, {
-      method: 'DELETE'
-    })
-
-    const result = await readResponse(response)
-
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al eliminar el producto`
-      )
-    }
+  if (op.type === 'CREATE') {
+    const payload = pick(op.data, [...PRODUCT_FIELDS, 'current_stock'])
+    const { data } = await api.post<LocalRecord>('/products', payload)
+    const serverId = Number(data.id)
 
     await deleteLocalData('products', id)
+    await saveServerRecord('products', data)
+    await replaceTemporaryId('products', id, serverId, op.id)
+    return
   }
+
+  if (op.type === 'UPDATE') {
+    const payload = pick(op.data, [...PRODUCT_FIELDS, 'expectedVersion'])
+    const { data } = await api.put<LocalRecord>(`/products/${id}`, payload)
+    await saveServerRecord('products', data)
+    return
+  }
+
+  await api.delete(`/products/${id}`)
+  await deleteLocalData('products', id)
 }
 
-const sendCategoryOperation = async (
-  operation: PendingOperation
-): Promise<void> => {
-  const endpoint = getEndpoint('categories')
-  const data = { ...operation.data }
-  const id = data.id
+async function sendCategory(op: PendingOperation): Promise<void> {
+  const id = Number(op.data.id)
 
-  if (operation.type === 'CREATE') {
-    delete data.id
+  if (op.type === 'CREATE') {
+    const { data } = await api.post<LocalRecord>('/categories', pick(op.data, CATEGORY_FIELDS))
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(data)
-    })
-
-    const result = await readResponse(response)
-
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al crear la categoría`
-      )
-    }
-
-    const category = result?.category || result
-    const categoryId = Number(category?.id)
-
-    if (!category || !Number.isSafeInteger(categoryId) || categoryId <= 0) {
-      throw new Error('El servidor no devolvió la categoría creada')
-    }
-
-    if (typeof id === 'number') {
-      await deleteLocalData('categories', id)
-    }
-
-    await saveLocalData('categories', {
-      ...category,
-      id: categoryId
-    } as Record<string, unknown> & { id: number })
-
+    await deleteLocalData('categories', id)
+    await saveServerRecord('categories', data)
+    await replaceTemporaryId('categories', id, Number(data.id), op.id)
     return
   }
 
-  if (typeof id !== 'number' || id <= 0) {
-    throw new Error('El identificador de la categoría no es válido')
-  }
-
-  if (operation.type === 'UPDATE') {
-    delete data.id
-
-    const response = await fetch(`${endpoint}/${id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(data)
-    })
-
-    const result = await readResponse(response)
-
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al actualizar la categoría`
-      )
-    }
-
-    const category = result?.category || result
-
-    if (category && Number.isSafeInteger(Number(category.id))) {
-      await saveLocalData('categories', {
-        ...category,
-        id: Number(category.id)
-      } as Record<string, unknown> & { id: number })
-    }
-
+  if (op.type === 'UPDATE') {
+    const payload = pick(op.data, [...CATEGORY_FIELDS, 'expectedVersion'])
+    const { data } = await api.put<LocalRecord>(`/categories/${id}`, payload)
+    await saveServerRecord('categories', data)
     return
   }
 
-  if (operation.type === 'DELETE') {
-    const response = await fetch(`${endpoint}/${id}`, {
-      method: 'DELETE'
-    })
-
-    const result = await readResponse(response)
-
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al desactivar la categoría`
-      )
-    }
-
-    const db = await getDatabase()
-    const category = await db.get('categories', id)
-
-    if (category) {
-      await saveLocalData('categories', {
-        ...category,
-        active: false
-      })
-    }
-  }
+  await api.delete(`/categories/${id}`)
+  const db = await getDatabase()
+  const category = await db.get('categories', id)
+  if (category) await saveLocalData('categories', { ...category, active: false })
 }
 
-const sendOrderOperation = async (
-  operation: PendingOperation
-): Promise<void> => {
-  const endpoint = getEndpoint('orders')
-  const data = { ...operation.data }
+async function sendOrder(op: PendingOperation): Promise<void> {
+  const id = Number(op.data.id)
 
-  if (operation.type === 'CREATE') {
-    const localOrderId = data.localOrderId
-
-    delete data.localOrderId
-    data.localId = operation.operationId
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(data)
-    })
-
-    const result = await readResponse(response)
-
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al sincronizar el pedido`
-      )
+  if (op.type === 'CREATE') {
+    const localOrderId = Number(op.data.localOrderId)
+    const payload = {
+      tableId: op.data.tableId,
+      localId: op.data.localId ?? op.operationId,
+      notes: op.data.notes ?? '',
+      items: op.data.items,
     }
 
-    const order = result?.order || result
-    const serverOrderId = Number(order?.id)
+    const { data } = await api.post<ServerOrder>('/orders', payload)
+    const serverId = Number(data.id)
 
-    if (
-      !order ||
-      !Number.isSafeInteger(serverOrderId) ||
-      serverOrderId <= 0
-    ) {
-      throw new Error(
-        'El servidor no devolvió un identificador válido para el pedido'
-      )
-    }
-
-    if (localOrderId !== undefined && localOrderId !== null) {
-      await deleteLocalData('orders', Number(localOrderId))
-    }
-
-    await saveLocalData('orders', {
-      ...order,
-      id: serverOrderId
-    } as Record<string, unknown> & { id: number })
-
-    const pendingOperations = await getAllOperations()
-
-    for (const pending of pendingOperations) {
-      if (pending.id === operation.id) continue
-
-      const pendingData = { ...pending.data }
-      let changed = false
-
-      if (
-        pending.entity === 'orders' &&
-        Number(pendingData.id) === Number(localOrderId)
-      ) {
-        pendingData.id = serverOrderId
-        changed = true
-      }
-
-      if (
-        pending.entity === 'sales' &&
-        Number(pendingData.orderId) === Number(localOrderId)
-      ) {
-        pendingData.orderId = serverOrderId
-        changed = true
-      }
-
-      if (changed && pending.id !== undefined) {
-        await updateOperation(pending.id, {
-          data: pendingData
-        })
-      }
-    }
-
+    if (Number.isSafeInteger(localOrderId)) await deleteLocalData('orders', localOrderId)
+    await saveServerRecord('orders', data)
+    await replaceTemporaryId('orders', localOrderId, serverId, op.id)
     return
   }
 
-  const id = Number(data.id)
-
-  if (!Number.isInteger(id) || id <= 0) {
-    throw new Error(
-      'No se puede sincronizar el estado de un pedido sin identificador del servidor'
-    )
-  }
-
-  if (operation.type === 'UPDATE') {
-    const response = await fetch(`${endpoint}/${id}/status`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        status: data.status
-      })
-    })
-
-    const result = await readResponse(response)
-
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al actualizar el pedido`
-      )
-    }
-
-    const order = result?.order || result
-
-    if (order && Number.isSafeInteger(Number(order.id))) {
-      await saveLocalData('orders', {
-        ...order,
-        id: Number(order.id)
-      } as Record<string, unknown> & { id: number })
-    }
-
+  if (op.type === 'UPDATE') {
+    const { data } = await api.patch<ServerOrder>(`/orders/${id}/status`, { status: op.data.status })
+    await saveServerRecord('orders', data)
     return
   }
 
-  if (operation.type === 'DELETE') {
-    const response = await fetch(`${endpoint}/${id}`, {
-      method: 'DELETE'
-    })
-
-    const result = await readResponse(response)
-
-    if (!response.ok) {
-      throw new Error(
-        result?.mensaje || `Error ${response.status} al cancelar el pedido`
-      )
-    }
-
-    const order = result?.order
-
-    if (order && Number.isSafeInteger(Number(order.id))) {
-      await saveLocalData('orders', {
-        ...order,
-        id: Number(order.id)
-      } as Record<string, unknown> & { id: number })
-    }
-
-    return
-  }
+  const { data } = await api.delete<{ order?: ServerOrder }>(`/orders/${id}`)
+  await saveServerRecord('orders', data.order)
 }
 
-const sendSaleOperation = async (
-  operation: PendingOperation
-): Promise<void> => {
-  if (operation.type !== 'CREATE') {
-    throw new Error('Esta operación de venta todavía no está implementada')
+async function sendSale(op: PendingOperation): Promise<void> {
+  if (op.type !== 'CREATE') {
+    throw new Error('Las ventas solo se pueden crear')
   }
 
-  const endpoint = getEndpoint('sales')
-  const data = operation.data
-
-  const orderId = Number(data.orderId)
-  const paymentMethodId = Number(data.paymentMethodId)
-  const localSaleId = Number(data.localSaleId)
-
-  if (!Number.isInteger(orderId) || orderId <= 0) {
-    throw new Error('El identificador del pedido no es válido')
-  }
-
-  if (!Number.isInteger(paymentMethodId) || paymentMethodId <= 0) {
-    throw new Error('El medio de pago no es válido')
-  }
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      orderId,
-      paymentMethodId,
-      reference: data.reference ?? null
-    })
+  const { data } = await api.post<{ venta?: LocalRecord }>('/sales', {
+    orderId: Number(op.data.orderId),
+    paymentMethodId: Number(op.data.paymentMethodId),
+    reference: op.data.reference ?? null,
   })
 
-  const result = await readResponse(response)
+  const sale = toLocalRecord(data.venta)
+  const localSaleId = Number(op.data.localSaleId)
 
-  if (!response.ok) {
-    throw new Error(
-      result?.mensaje || `Error ${response.status} al registrar la venta`
-    )
-  }
+  if (sale) await saveLocalData('sales', { ...sale, order_id: Number(op.data.orderId), pendingSync: false })
+  if (Number.isSafeInteger(localSaleId) && localSaleId < 0) await deleteLocalData('sales', localSaleId)
+}
 
-  const sale = result?.venta || result?.sale || result
-  const saleId = Number(sale?.id)
-
-  if (!sale || !Number.isSafeInteger(saleId) || saleId <= 0) {
-    throw new Error('El servidor no devolvió la venta registrada')
-  }
-
-  const savedSale = {
-    ...sale,
-    id: saleId,
-    order_id: Number(sale.order_id ?? orderId),
-    pendingSync: false
-  }
-
-  await saveLocalData(
-    'sales',
-    savedSale as Record<string, unknown> & { id: number }
-  )
-
-  if (Number.isInteger(localSaleId) && localSaleId < 0) {
-    await deleteLocalData('sales', localSaleId)
+async function sendOperation(op: PendingOperation): Promise<void> {
+  switch (op.entity) {
+    case 'products':
+      return sendProduct(op)
+    case 'categories':
+      return sendCategory(op)
+    case 'orders':
+      return sendOrder(op)
+    case 'sales':
+      return sendSale(op)
+    default:
+      throw new Error(`La sincronización de ${op.entity} no está disponible`)
   }
 }
 
-const sendOperation = async (
-  operation: PendingOperation
-): Promise<void> => {
-  switch (operation.entity) {
-    case 'products':
-      await sendProductOperation(operation)
-      return
+// ---------- ciclo de sincronización ----------
 
-    case 'categories':
-      await sendCategoryOperation(operation)
-      return
+async function applyServerVersion(op: PendingOperation, server: unknown): Promise<void> {
+  if (server === undefined) {
+    if (op.type === 'CREATE' && op.entity !== 'sales') {
+      await deleteLocalData(op.entity, Number(op.data.id))
+    }
+    return
+  }
 
-    case 'orders':
-      await sendOrderOperation(operation)
-      return
+  await saveServerRecord(op.entity, server)
+}
 
-    case 'sales':
-      await sendSaleOperation(operation)
-      return
+async function processOperation(op: PendingOperation): Promise<'continue' | 'stop'> {
+  const id = op.id as number
 
-    default:
-      throw new Error(
-        `La sincronización de ${operation.entity} todavía no está implementada`
-      )
+  await updateOperation(id, { status: 'processing', error: undefined })
+
+  try {
+    await sendOperation(op)
+    await deleteOperation(id)
+    return 'continue'
+  } catch (error) {
+    const decision = decide(toFailure(error), op.type)
+
+    switch (decision.action) {
+      case 'retry_later':
+        await updateOperation(id, {
+          status: 'pending',
+          attempts: op.attempts + 1,
+          nextAttemptAt: Date.now() + backoffDelay(op.attempts + 1),
+          error: 'Servidor no disponible, se reintentará',
+        })
+        return 'stop'
+
+      case 'stop':
+        await updateOperation(id, { status: 'pending' })
+        return 'stop'
+
+      case 'server_wins':
+        // Resolución automática: se acepta la versión del servidor
+        await applyServerVersion(op, decision.server)
+        await deleteOperation(id)
+        await addSyncLog({
+          operationId: op.operationId,
+          entity: op.entity,
+          type: op.type,
+          resolution: 'server_wins',
+          message: decision.message,
+        })
+        return 'continue'
+
+      case 'conflict':
+        await updateOperation(id, {
+          status: 'conflict',
+          attempts: op.attempts + 1,
+          error: decision.message,
+          conflict: {
+            reason: decision.reason,
+            message: decision.message,
+            server: decision.server,
+            detectedAt: new Date().toISOString(),
+          },
+        })
+        return 'continue'
+
+      case 'error':
+        await updateOperation(id, {
+          status: 'error',
+          attempts: op.attempts + 1,
+          error: decision.message,
+        })
+        return 'continue'
+    }
   }
 }
 
@@ -493,62 +326,121 @@ export const synchronizeData = async (): Promise<void> => {
   synchronizing = true
 
   try {
-    const operations = await getPendingOperations()
+    // Se necesita una sesión válida para enviar datos
+    if (!getAccessToken()) {
+      const session = await refreshSession().catch(() => null)
+      if (!session) return
+    }
 
-    for (const queuedOperation of operations) {
+    for (const queued of await getPendingOperations()) {
       if (!navigator.onLine) break
-      if (queuedOperation.id === undefined) continue
+      if (queued.id === undefined) continue
 
-      const latestOperations = await getAllOperations()
+      // Se vuelve a leer por si cambió mientras se procesaban las anteriores
+      const op = await getOperation(queued.id)
 
-      const operation = latestOperations.find(
-        item => item.id === queuedOperation.id
-      )
+      if (!op || op.status !== 'pending') continue
+      if (op.nextAttemptAt && op.nextAttemptAt > Date.now()) continue
+      if (waitingForDependency(op)) continue
 
-      if (!operation || operation.status === 'error') continue
-
-      try {
-        await updateOperation(operation.id!, {
-          status: 'processing',
-          error: undefined
-        })
-
-        await sendOperation(operation)
-
-        await deleteOperation(operation.id!)
-      } catch (error) {
-        await updateOperation(operation.id!, {
-          status: 'error',
-          attempts: operation.attempts + 1,
-          error: error instanceof Error
-            ? error.message
-            : 'Error desconocido'
-        })
-
-        console.error(
-          `Error sincronizando ${operation.entity}:`,
-          error
-        )
-      }
+      if ((await processOperation(op)) === 'stop') break
     }
   } finally {
     synchronizing = false
+    notifyChange()
   }
 }
+
+// ---------- resolución manual de conflictos ----------
+
+// choice = 'local'  -> "mantener mi cambio"
+// choice = 'server' -> "usar lo que está en el servidor"
+export async function resolveConflict(operationId: number, choice: 'local' | 'server'): Promise<void> {
+  const op = await getOperation(operationId)
+
+  if (!op || op.status !== 'conflict' || !op.conflict) return
+
+  const { reason, server } = op.conflict
+
+  if (choice === 'local') {
+    const data = { ...op.data }
+
+    // Se reenvía el cambio tomando como base la versión actual del servidor
+    if (reason === 'VERSION_MISMATCH' && typeof server === 'object' && server !== null) {
+      data.expectedVersion = Number((server as { version?: unknown }).version)
+    }
+
+    await updateOperation(operationId, {
+      data,
+      status: 'pending',
+      conflict: undefined,
+      error: undefined,
+      nextAttemptAt: undefined,
+    })
+    await addSyncLog({
+      operationId: op.operationId,
+      entity: op.entity,
+      type: op.type,
+      resolution: 'local_wins',
+      message: 'Se mantuvo el cambio hecho en este dispositivo',
+    })
+  } else {
+    if (reason === 'VERSION_MISMATCH') {
+      await saveServerRecord(op.entity, server)
+    }
+
+    if (op.entity === 'sales') {
+      const localSaleId = Number(op.data.localSaleId)
+      if (Number.isSafeInteger(localSaleId) && localSaleId < 0) {
+        await deleteLocalData('sales', localSaleId)
+      }
+    }
+
+    await deleteOperation(operationId)
+    await addSyncLog({
+      operationId: op.operationId,
+      entity: op.entity,
+      type: op.type,
+      resolution: reason === 'VERSION_MISMATCH' ? 'server_wins' : 'discarded',
+      message:
+        reason === 'VERSION_MISMATCH'
+          ? 'Se conservó la versión del servidor'
+          : 'La operación se descartó',
+    })
+  }
+
+  notifyChange()
+  await synchronizeData()
+}
+
+export async function discardOperation(operationId: number): Promise<void> {
+  const op = await getOperation(operationId)
+  if (!op) return
+
+  await deleteOperation(operationId)
+  await addSyncLog({
+    operationId: op.operationId,
+    entity: op.entity,
+    type: op.type,
+    resolution: 'discarded',
+    message: 'Operación descartada manualmente',
+  })
+  notifyChange()
+}
+
+// ---------- sincronización automática ----------
 
 export const startAutoSync = (): void => {
   window.addEventListener('online', synchronizeData)
 
-  synchronizeData()
+  void synchronizeData()
 
   if (syncInterval !== undefined) {
     window.clearInterval(syncInterval)
   }
 
   syncInterval = window.setInterval(() => {
-    if (navigator.onLine) {
-      synchronizeData()
-    }
+    if (navigator.onLine) void synchronizeData()
   }, 15000)
 }
 

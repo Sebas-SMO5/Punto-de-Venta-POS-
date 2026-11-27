@@ -1,25 +1,42 @@
+// Valida los datos que llegan en la petición usando un esquema de Zod.
+// Si los datos no cumplen las reglas, responde 400 con la lista de errores
+// y la petición no llega al controlador. Si cumplen, deja los datos ya
+// limpios y convertidos en req.body / req.params / req.query.
+//
+// Uso: router.post('/', validate({ body: productSchema }), controller.create)
+const AppError = require('../utils/AppError')
 
-export const validate = (schema) => {
+function validate(schemas) {
   return (req, res, next) => {
-    const result = schema.safeParse({
-      body: req.body,
-      params: req.params,
-      query: req.query
-    })
+    const errors = []
 
-    if (!result.success) {
-      return res.status(400).json({
-        success: false,
-        message: 'Datos de entrada inválidos',
-        errors: result.error.issues.map((issue) => ({
-          path: issue.path.join('.'),
-          message: issue.message
-        }))
-      })
+    for (const part of ['params', 'query', 'body']) {
+      const schema = schemas[part]
+      if (!schema) continue
+
+      const result = schema.safeParse(req[part] ?? {})
+
+      if (!result.success) {
+        for (const issue of result.error.issues) {
+          errors.push({
+            campo: [part, ...issue.path].join('.'),
+            mensaje: issue.message
+          })
+        }
+      } else if (part === 'query') {
+        // En Express 5 req.query es de solo lectura
+        req.validatedQuery = result.data
+      } else {
+        req[part] = result.data
+      }
     }
 
-    req.validated = result.data
+    if (errors.length) {
+      return next(AppError.badRequest(errors[0].mensaje, errors))
+    }
 
     next()
   }
 }
+
+module.exports = validate

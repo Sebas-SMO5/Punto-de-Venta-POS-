@@ -1,9 +1,9 @@
+// Controlador de pedidos: recibe la petición, llama al servicio y responde.
 const ordersService = require('../services/orders.service')
 
 async function getOrders(req, res, next) {
   try {
-    const orders = await ordersService.getAll()
-    res.json(orders)
+    res.json(await ordersService.getAll())
   } catch (error) {
     next(error)
   }
@@ -11,23 +11,7 @@ async function getOrders(req, res, next) {
 
 async function getOrderById(req, res, next) {
   try {
-    const id = Number(req.params.id)
-
-    if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({
-        mensaje: 'El identificador del pedido no es válido'
-      })
-    }
-
-    const order = await ordersService.getById(id)
-
-    if (!order) {
-      return res.status(404).json({
-        mensaje: 'Pedido no encontrado'
-      })
-    }
-
-    res.json(order)
+    res.json(await ordersService.getById(req.params.id))
   } catch (error) {
     next(error)
   }
@@ -35,8 +19,7 @@ async function getOrderById(req, res, next) {
 
 async function createOrder(req, res, next) {
   try {
-    const order = await ordersService.create(req.body)
-    res.status(201).json(order)
+    res.status(201).json(await ordersService.create(req.body, req.user))
   } catch (error) {
     next(error)
   }
@@ -44,23 +27,7 @@ async function createOrder(req, res, next) {
 
 async function updateOrderStatus(req, res, next) {
   try {
-    const id = Number(req.params.id)
-
-    if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({
-        mensaje: 'El identificador del pedido no es válido'
-      })
-    }
-
-    const order = await ordersService.updateStatus(id, req.body.status)
-
-    if (!order) {
-      return res.status(404).json({
-        mensaje: 'Pedido no encontrado'
-      })
-    }
-
-    res.json(order)
+    res.json(await ordersService.updateStatus(req.params.id, req.body.status, req.user))
   } catch (error) {
     next(error)
   }
@@ -68,26 +35,8 @@ async function updateOrderStatus(req, res, next) {
 
 async function cancelOrder(req, res, next) {
   try {
-    const id = Number(req.params.id)
-
-    if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({
-        mensaje: 'El identificador del pedido no es válido'
-      })
-    }
-
-    const order = await ordersService.cancel(id)
-
-    if (!order) {
-      return res.status(404).json({
-        mensaje: 'Pedido no encontrado'
-      })
-    }
-
-    res.json({
-      mensaje: 'Pedido cancelado correctamente',
-      order
-    })
+    const order = await ordersService.cancel(req.params.id, req.user)
+    res.json({ mensaje: 'Pedido cancelado correctamente', order })
   } catch (error) {
     next(error)
   }

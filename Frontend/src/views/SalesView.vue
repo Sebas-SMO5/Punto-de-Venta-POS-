@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import type { Product, ServerOrder, ServerOrderItem } from '../types/models'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api } from '../services/api'
+import { api, errorMessage } from '../services/api'
 import { ordersService } from '../services/orders.service'
 import { productsService } from '../services/products.service'
 import { tablesService, type RestaurantTable } from '../services/tables.service'
@@ -55,7 +56,7 @@ const selectedPaymentMethod = ref(1)
 const isOffline = ref(!navigator.onLine)
 const showOrderModal = ref(false)
 const isCreatingOrder = ref(false)
-const availableProducts = ref<any[]>([])
+const availableProducts = ref<Product[]>([])
 const availableTables = ref<RestaurantTable[]>([])
 const selectedTableId = ref<number | null>(null)
 const orderNotes = ref('')
@@ -101,9 +102,7 @@ async function openOrderModal() {
       tablesService.getAll()
     ])
 
-    availableProducts.value = products.filter((product: any) =>
-      product.available !== false && product.active !== false
-    )
+    availableProducts.value = products.filter(product => product.available !== false)
 
     availableTables.value = tables.filter(table =>
       table.active !== false
@@ -137,7 +136,7 @@ selectedTableId.value = primeraMesa.id
   }
 }
 
-function addProductToCart(product: any) {
+function addProductToCart(product: Product) {
   const existing = orderCart.value.find(
     item => item.productId === Number(product.id)
   )
@@ -199,7 +198,7 @@ async function createNewOrder() {
 
     const createdOrder = await ordersService.create(
       tableId,
-      cartItems as any,
+      cartItems,
       notes
     )
 
@@ -208,7 +207,7 @@ async function createNewOrder() {
     const newOrder: Order = {
       id: localId,
       order_number:
-        (createdOrder as any).order_number ||
+        createdOrder.order_number ||
         `PED-${String(Math.abs(localId)).padStart(6, '0')}`,
       table_id: tableId,
       table_number: table?.table_number ?? tableId,
@@ -241,14 +240,9 @@ async function createNewOrder() {
     alert(
       `Pedido registrado correctamente.\n\nPedido: ${newOrder.order_number}\nMesa: ${newOrder.table_number}\nTotal: ${formatCurrency(total)}`
     )
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al crear pedido:', error)
-    alert(
-      error.response?.data?.mensaje ||
-      error.response?.data?.message ||
-      error.message ||
-      'No se pudo registrar el pedido.'
-    )
+    alert(errorMessage(error, 'No se pudo registrar el pedido.'))
   } finally {
     isCreatingOrder.value = false
   }
@@ -291,12 +285,12 @@ async function loadOrders() {
   try {
     const response = await ordersService.getAll()
 
-    orders.value = response.map((order: any) => ({
+    orders.value = response.map((order: ServerOrder) => ({
       id: Number(order.id),
       order_number: order.order_number || `PED-${order.id}`,
       table_id: Number(order.table_id ?? order.tableNumber ?? 0),
       table_number: order.table_number ?? order.tableNumber ?? null,
-      items: (order.items || []).map((item: any) => ({
+      items: (order.items || []).map((item: ServerOrderItem) => ({
         id: Number(item.id ?? item.productId ?? item.product_id ?? 0),
         productId: Number(item.productId ?? item.product_id ?? 0),
         name: item.name || item.product_name || 'Producto',
@@ -390,9 +384,9 @@ async function updateStatus(
 
     await loadOrders()
     alert('Pedido actualizado correctamente.')
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al actualizar pedido:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo actualizar el pedido.')
+    alert(errorMessage(error, 'No se pudo actualizar el pedido.'))
   }
 }
 
@@ -499,11 +493,10 @@ async function registerSale() {
     alert(
       `Venta guardada correctamente sin conexión.\n\nVenta: ${localSale.sale_number}\nPedido: ${order.order_number}\nTotal: ${formatCurrency(order.total)}\n\nSe sincronizará cuando vuelva internet.`
     )
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al registrar venta:', error)
     alert(
-      error.response?.data?.mensaje ||
-      'No se pudo registrar la venta.'
+      errorMessage(error, 'No se pudo registrar la venta.')
     )
   } finally {
     isRegistering.value = false

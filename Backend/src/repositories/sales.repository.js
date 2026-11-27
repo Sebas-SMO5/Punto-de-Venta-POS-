@@ -1,5 +1,6 @@
 const pool = require('../config/database')
 const { randomUUID } = require('crypto')
+const AppError = require('../utils/AppError')
 
 async function getAll() {
   const result = await pool.query(`
@@ -107,7 +108,10 @@ async function getById(id) {
   return result.rows[0] || null
 }
 
-async function createFromOrder(orderId, paymentMethodId, reference = null) {
+// Registra la venta de un pedido en UNA sola transacción (todo o nada):
+// bloquea el pedido y el inventario (FOR UPDATE) para que dos cajas no
+// cobren el mismo pedido ni descuenten el mismo stock al mismo tiempo.
+async function createFromOrder(orderId, paymentMethodId, reference = null, userId = null) {
   const client = await pool.connect()
 
   try {
@@ -121,13 +125,13 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
     `, [orderId])
 
     if (orderResult.rows.length === 0) {
-      throw new Error('El pedido no existe')
+      throw AppError.notFound('El pedido no existe')
     }
 
     const order = orderResult.rows[0]
 
     if (order.status !== 'completed') {
-      throw new Error('Solo se pueden registrar ventas de pedidos completados')
+      throw AppError.badRequest('Solo se pueden registrar ventas de pedidos completados')
     }
 
     const existingSale = await client.query(
@@ -150,7 +154,7 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
     `, [paymentMethodId])
 
     if (methodResult.rows.length === 0) {
-      throw new Error('El medio de pago no existe o está inactivo')
+      throw AppError.badRequest('El medio de pago no existe o está inactivo')
     }
 
     const itemsResult = await client.query(`
@@ -166,7 +170,7 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
     `, [orderId])
 
     if (itemsResult.rows.length === 0) {
-      throw new Error('El pedido no tiene productos registrados')
+      throw AppError.badRequest('El pedido no tiene productos registrados')
     }
 
     for (const item of itemsResult.rows) {
@@ -178,7 +182,7 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
       `, [item.product_id])
 
       if (inventoryResult.rows.length === 0) {
-        throw new Error(
+        throw AppError.badRequest(
           `El producto ${item.product_name} no tiene inventario registrado`
         )
       }
@@ -187,8 +191,11 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
       const quantity = Number(item.quantity)
 
       if (previousStock < quantity) {
-        throw new Error(
-          `Stock insuficiente para ${item.product_name}. Existencias: ${previousStock}, solicitado: ${quantity}`
+        // Conflicto: el stock cambió (por ejemplo, otra caja vendió mientras
+        // este dispositivo estaba sin conexión). La venta no se registra.
+        throw AppError.conflict(
+          `Stock insuficiente para ${item.product_name}. Existencias: ${previousStock}, solicitado: ${quantity}`,
+          { reason: 'INSUFFICIENT_STOCK', productId: item.product_id, available: previousStock, requested: quantity }
         )
       }
 
@@ -218,7 +225,7 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
       `, [
         randomUUID(),
         item.product_id,
-        order.user_id,
+        userId || order.user_id,
         quantity,
         previousStock,
         newStock,
@@ -242,7 +249,7 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
       RETURNING id
     `, [
       order.id,
-      order.user_id,
+      userId || order.user_id,
       saleNumber,
       order.subtotal,
       order.tax,
@@ -299,7 +306,16 @@ async function createFromOrder(orderId, paymentMethodId, reference = null) {
   }
 }
 
+async function getPaymentMethods() {
+  const result = await pool.query(
+    'SELECT id, name FROM payment_methods WHERE active = TRUE ORDER BY id'
+  )
+
+  return result.rows
+}
+
 module.exports = {
+  getPaymentMethods,
   getAll,
   getById,
   createFromOrder

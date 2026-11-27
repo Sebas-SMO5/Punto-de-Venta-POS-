@@ -1,73 +1,33 @@
+// Lógica de negocio de pedidos. Los datos ya llegan validados por Zod.
+// El usuario que crea el pedido es SIEMPRE el que inició sesión (req.user),
+// nunca un dato que mande el navegador.
 const ordersRepository = require('../repositories/orders.repository')
-
-const validStatuses = [
-  'pending',
-  'preparing',
-  'ready',
-  'completed',
-  'cancelled'
-]
-
-function validateOrder(data) {
-  if (!Number.isInteger(Number(data.tableId)) || Number(data.tableId) <= 0) {
-    const error = new Error('El identificador de la mesa no es válido')
-    error.status = 400
-    throw error
-  }
-
-  if (!Array.isArray(data.items) || data.items.length === 0) {
-    const error = new Error('El pedido debe incluir al menos un producto')
-    error.status = 400
-    throw error
-  }
-
-  for (const item of data.items) {
-    if (
-      !Number.isInteger(Number(item.productId)) ||
-      Number(item.productId) <= 0 ||
-      !Number.isInteger(Number(item.quantity)) ||
-      Number(item.quantity) <= 0
-    ) {
-      const error = new Error('Los productos del pedido contienen datos inválidos')
-      error.status = 400
-      throw error
-    }
-  }
-}
+const AppError = require('../utils/AppError')
 
 async function getAll() {
   return ordersRepository.getAll()
 }
 
 async function getById(id) {
-  return ordersRepository.getById(id)
+  const order = await ordersRepository.getById(id)
+
+  if (!order) throw AppError.notFound('Pedido no encontrado')
+
+  return order
 }
 
-async function create(data) {
-  validateOrder(data)
-
-  return ordersRepository.create({
-    ...data,
-    tableId: Number(data.tableId),
-    items: data.items.map(item => ({
-      productId: Number(item.productId),
-      quantity: Number(item.quantity)
-    }))
-  })
+// Si el pedido trae localId (se creó sin conexión) y ya existe, el
+// repositorio devuelve el mismo pedido en vez de duplicarlo (idempotencia).
+async function create(data, user) {
+  return ordersRepository.create({ ...data, userId: user.id })
 }
 
-async function updateStatus(id, status) {
-  if (!validStatuses.includes(status)) {
-    const error = new Error('El estado del pedido no es válido')
-    error.status = 400
-    throw error
-  }
-
-  return ordersRepository.updateStatus(id, status)
+async function updateStatus(id, status, user) {
+  return ordersRepository.updateStatus(id, status, user)
 }
 
-async function cancel(id) {
-  return ordersRepository.updateStatus(id, 'cancelled')
+async function cancel(id, user) {
+  return ordersRepository.updateStatus(id, 'cancelled', user)
 }
 
 module.exports = {

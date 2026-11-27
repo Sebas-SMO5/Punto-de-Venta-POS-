@@ -29,7 +29,9 @@ async function submit() {
     router.replace(redirect)
   } catch (err) {
     if (axios.isAxiosError(err) && err.response) {
-      error.value = err.response.data?.mensaje || 'Credenciales incorrectas'
+      const fallback =
+        err.response.status === 401 ? 'Credenciales incorrectas' : 'Error en el servidor, revise el backend'
+      error.value = err.response.data?.mensaje || fallback
     } else {
       error.value = 'No se pudo conectar con el servidor'
     }

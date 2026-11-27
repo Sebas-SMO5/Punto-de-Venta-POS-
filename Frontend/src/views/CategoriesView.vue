@@ -4,11 +4,14 @@ import {
   categoriesService,
   type Category
 } from '../services/categories.service'
+import { errorMessage as describeError } from '../services/api'
 
 const categories = ref<Category[]>([])
 const search = ref('')
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
+// Versión de la categoría que se está editando (para detectar conflictos)
+const editingVersion = ref<number | undefined>(undefined)
 const loading = ref(false)
 const saving = ref(false)
 const errorMessage = ref('')
@@ -53,6 +56,7 @@ function openCreateForm() {
 
 function editCategory(category: Category) {
   editingId.value = category.id
+  editingVersion.value = category.version
 
   form.value = {
     name: category.name,
@@ -84,7 +88,7 @@ async function saveCategory() {
     }
 
     if (isEditing && editingId.value !== null) {
-      await categoriesService.update(editingId.value, data)
+      await categoriesService.update(editingId.value, data, editingVersion.value)
     } else {
       await categoriesService.create(data)
     }
@@ -98,13 +102,11 @@ async function saveCategory() {
         ? 'Categoría actualizada correctamente.'
         : 'Categoría registrada correctamente.'
     )
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al guardar categoría:', error)
 
     errorMessage.value =
-      error.response?.data?.mensaje ||
-      error.message ||
-      'No fue posible guardar la categoría.'
+      describeError(error, 'No fue posible guardar la categoría.')
   } finally {
     saving.value = false
   }
@@ -123,13 +125,11 @@ async function deleteCategory(id: number) {
     await loadCategories()
 
     alert('Categoría desactivada correctamente.')
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al desactivar categoría:', error)
 
     errorMessage.value =
-      error.response?.data?.mensaje ||
-      error.message ||
-      'No fue posible desactivar la categoría.'
+      describeError(error, 'No fue posible desactivar la categoría.')
   }
 }
 

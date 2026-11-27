@@ -1,27 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api } from '../services/api'
+import axios from 'axios'
+import { errorMessage } from '../services/api'
+import { productsService } from '../services/products.service'
+import { categoriesService, type Category } from '../services/categories.service'
+import { useAuthStore } from '../stores/auth'
+import type { Product, ProductInput } from '../types/models'
 
-interface Product {
-  id: number
-  category_id: number
-  name: string
-  description: string
-  category: string
-  price: number | string
-  available: boolean
-  current_stock: number | string
-  minimum_stock: number | string
-}
-
-interface Category {
-  id: number
-  name: string
-  active: boolean
-}
-
+const auth = useAuthStore()
 const products = ref<Product[]>([])
 const categories = ref<Category[]>([])
+// Versión del producto que se está editando (bloqueo optimista)
+const editingVersion = ref<number | undefined>(undefined)
 
 const search = ref('')
 const selectedCategory = ref('Todas')
@@ -69,32 +59,20 @@ async function loadProducts() {
   isLoading.value = true
 
   try {
-    const [productsResponse, categoriesResponse] = await Promise.all([
-      api.get<Product[]>('/products'),
-      api.get<Category[]>('/categories'),
+    const [productList, categoryList] = await Promise.all([
+      productsService.getAll(),
+      categoriesService.getAll(),
     ])
 
-    products.value = productsResponse.data.map((product) => ({
-      ...product,
-      price: Number(product.price),
-      current_stock: Number(product.current_stock ?? 0),
-      minimum_stock: Number(product.minimum_stock ?? 0),
-    }))
+    products.value = productList
+    categories.value = categoryList.filter((category) => category.active)
 
-    categories.value = categoriesResponse.data.filter(
-      (category) => category.active,
-    )
-
-    if (
-      !categories.value.some(
-        (category) => category.name === form.value.category,
-      )
-    ) {
+    if (!categories.value.some((category) => category.name === form.value.category)) {
       form.value.category = categories.value[0]?.name || ''
     }
   } catch (error) {
     console.error('Error al cargar productos:', error)
-    alert('No se pudieron cargar los productos.')
+    alert(errorMessage(error, 'No se pudieron cargar los productos.'))
   } finally {
     isLoading.value = false
   }
@@ -122,6 +100,7 @@ function openCreateForm() {
 
 function editProduct(product: Product) {
   editingId.value = product.id
+  editingVersion.value = product.version
 
   form.value = {
     name: product.name,
@@ -155,7 +134,7 @@ async function saveProduct() {
     return
   }
 
-  const data = {
+  const data: ProductInput = {
     name,
     category: form.value.category,
     price,
@@ -167,21 +146,33 @@ async function saveProduct() {
 
   try {
     if (editingId.value !== null) {
-      await api.put(`/products/${editingId.value}`, data)
+      await productsService.update(editingId.value, data, editingVersion.value)
     } else {
-      await api.post('/products', {
-        ...data,
-        current_stock: currentStock,
-      })
+      await productsService.create({ ...data, current_stock: currentStock })
     }
 
     showForm.value = false
     await loadProducts()
 
-    alert('Producto guardado correctamente.')
-  } catch (error: any) {
+    alert(
+      navigator.onLine
+        ? 'Producto guardado correctamente.'
+        : 'Producto guardado en este dispositivo. Se sincronizará cuando vuelva internet.',
+    )
+  } catch (error: unknown) {
     console.error('Error al guardar producto:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo guardar el producto.')
+
+    // 409: otra persona cambió el producto mientras se editaba
+    if (axios.isAxiosError(error) && error.response?.status === 409) {
+      alert(`${errorMessage(error)}
+
+Se cargará la versión más reciente.`)
+      showForm.value = false
+      await loadProducts()
+      return
+    }
+
+    alert(errorMessage(error, 'No se pudo guardar el producto.'))
   } finally {
     isSaving.value = false
   }
@@ -195,12 +186,12 @@ async function deleteProduct(id: number) {
   if (!confirmed) return
 
   try {
-    await api.delete(`/products/${id}`)
+    await productsService.delete(id)
     await loadProducts()
     alert('Producto desactivado correctamente.')
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al eliminar producto:', error)
-    alert(error.response?.data?.mensaje || 'No se pudo desactivar el producto.')
+    alert(errorMessage(error, 'No se pudo desactivar el producto.'))
   }
 }
 
@@ -215,7 +206,7 @@ onMounted(loadProducts)
         <p>Administra los platos, bebidas y existencias del menú.</p>
       </div>
 
-      <button class="primary-button" @click="openCreateForm">
+      <button v-if="auth.isAdmin" class="primary-button" @click="openCreateForm">
         + Nuevo producto
       </button>
     </div>
@@ -308,7 +299,7 @@ onMounted(loadProducts)
               </td>
 
               <td>
-                <div class="product-actions">
+                <div v-if="auth.isAdmin" class="product-actions">
                   <button
                     class="table-action"
                     @click="editProduct(product)"

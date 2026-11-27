@@ -1,10 +1,10 @@
-
+// Controlador de ventas: recibe la petición, llama al servicio y responde.
+// Los datos ya llegan validados por Zod (ver validators/schemas.js).
 const salesService = require('../services/sales.service')
 
 async function getSales(req, res, next) {
   try {
-    const sales = await salesService.getAll()
-    res.json(sales)
+    res.json(await salesService.getAll())
   } catch (error) {
     next(error)
   }
@@ -12,23 +12,7 @@ async function getSales(req, res, next) {
 
 async function getSaleById(req, res, next) {
   try {
-    const id = Number(req.params.id)
-
-    if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({
-        mensaje: 'El identificador de la venta no es válido'
-      })
-    }
-
-    const sale = await salesService.getById(id)
-
-    if (!sale) {
-      return res.status(404).json({
-        mensaje: 'Venta no encontrada'
-      })
-    }
-
-    res.json(sale)
+    res.json(await salesService.getById(req.params.id))
   } catch (error) {
     next(error)
   }
@@ -36,45 +20,21 @@ async function getSaleById(req, res, next) {
 
 async function createSale(req, res, next) {
   try {
-    const orderId = Number(req.body.orderId)
-    const paymentMethodId = Number(req.body.paymentMethodId)
-    const reference = req.body.reference || null
-
-    if (!Number.isInteger(orderId) || orderId <= 0) {
-      return res.status(400).json({
-        mensaje: 'El identificador del pedido no es válido'
-      })
-    }
-
-    if (!Number.isInteger(paymentMethodId) || paymentMethodId <= 0) {
-      return res.status(400).json({
-        mensaje: 'El medio de pago no es válido'
-      })
-    }
-
-    const sale = await salesService.createFromOrder(
-      orderId,
-      paymentMethodId,
-      reference
-    )
+    const sale = await salesService.createFromOrder(req.body, req.user)
 
     res.status(201).json({
       mensaje: 'Venta registrada correctamente',
       venta: sale
     })
   } catch (error) {
-    if (
-      error.message === 'El pedido no existe' ||
-      error.message === 'Solo se pueden registrar ventas de pedidos completados' ||
-      error.message === 'Este pedido ya tiene una venta registrada' ||
-      error.message === 'El medio de pago no existe o está inactivo' ||
-      error.message === 'El pedido no tiene productos registrados'
-    ) {
-      return res.status(400).json({
-        mensaje: error.message
-      })
-    }
+    next(error)
+  }
+}
 
+async function getPaymentMethods(req, res, next) {
+  try {
+    res.json(await salesService.getPaymentMethods())
+  } catch (error) {
     next(error)
   }
 }
@@ -82,5 +42,6 @@ async function createSale(req, res, next) {
 module.exports = {
   getSales,
   getSaleById,
-  createSale
+  createSale,
+  getPaymentMethods
 }

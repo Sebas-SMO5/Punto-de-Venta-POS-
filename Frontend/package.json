@@ -12,7 +12,9 @@
     "lint": "run-s \"lint:*\"",
     "lint:oxlint": "oxlint . --fix",
     "lint:eslint": "eslint . --fix --cache",
-    "format": "prettier --write --experimental-cli src/"
+    "format": "prettier --write --experimental-cli src/",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "axios": "^1.20.0",
@@ -22,6 +24,7 @@
     "vue-router": "^5.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@tsconfig/node24": "^24.0.5",
     "@types/node": "^24.13.4",
     "@vitejs/plugin-vue": "^6.0.8",
@@ -31,6 +34,7 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-oxlint": "~1.82.0",
     "eslint-plugin-vue": "~10.11.0",
+    "fake-indexeddb": "^6.2.8",
     "jiti": "^2.7.0",
     "npm-run-all2": "^9.0.3",
     "oxlint": "~1.82.0",
@@ -38,6 +42,7 @@
     "typescript": "~6.0.0",
     "vite": "^8.2.2",
     "vite-plugin-vue-devtools": "^8.2.1",
+    "vitest": "^3.2.7",
     "vue-eslint-parser": "^10.4.1",
     "vue-tsc": "^3.3.11"
   },

@@ -1,5 +1,16 @@
 {
-  "dependencies": {
-    "axios": "^1.20.0"
+  "name": "pos-restaurante-offline-first",
+  "private": true,
+  "description": "Punto de venta (POS) para restaurante con arquitectura offline-first",
+  "scripts": {
+    "install:all": "npm --prefix Backend install && npm --prefix Frontend install",
+    "build": "npm --prefix Frontend ci --include=dev && npm --prefix Frontend run build-only && npm --prefix Backend ci --omit=dev",
+    "start": "npm --prefix Backend start",
+    "migrate": "npm --prefix Backend run migrate",
+    "test": "npm --prefix Backend test && npm --prefix Frontend run test:unit",
+    "test:e2e": "npm --prefix Frontend run test:e2e"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

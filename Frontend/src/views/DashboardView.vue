@@ -1,54 +1,31 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api } from '../services/api'
 import { useProductsStore } from '../stores/products'
 import { useOrdersStore } from '../stores/orders'
+import { tablesService } from '../services/tables.service'
 import StatCard from '../components/StatCard.vue'
 
 const productsStore = useProductsStore()
 const ordersStore = useOrdersStore()
 
 const tableData = ref<{ number: number; occupied: boolean }[]>([])
-const dashboardOrders = ref<any[]>([])
+const loadError = ref('')
 
 onMounted(async () => {
-  try {
-    await productsStore.loadProducts()
-  } catch (error) {
-    console.error('Error al cargar productos:', error)
-  }
+  await Promise.all([productsStore.load(), ordersStore.load(true)])
 
   try {
-    const [ordersResponse, tablesResponse] = await Promise.all([
-      api.get<any[]>('/orders'),
-      api.get<any[]>('/tables')
-    ])
+    const restaurantTables = await tablesService.getAll()
 
-    dashboardOrders.value = (ordersResponse.data || []).map(order => ({
-      id: order.id,
-      tableNumber: Number(order.table_number || order.tableNumber || order.table_id || 0),
-      total: Number(order.total || 0),
-      status: ({
-        pending: 'Pendiente',
-        preparing: 'En preparación',
-        ready: 'Listo',
-        completed: 'Entregado',
-        cancelled: 'Cancelado'
-      } as Record<string, string>)[order.status] || order.status,
-      createdAt: order.created_at || order.createdAt,
-      items: Array.isArray(order.items) ? order.items : []
-    }))
-
-    tableData.value = (tablesResponse.data || []).map(table => ({
-      number: Number(table.table_number || table.number),
-      occupied: Array.isArray(table.orders)
-        ? table.orders.some((order: any) =>
-            !['completed', 'cancelled', 'Entregado', 'Cancelado'].includes(order.status)
-          )
-        : Boolean(table.occupied)
+    tableData.value = restaurantTables.map((table) => ({
+      number: Number(table.table_number),
+      occupied: (table.orders ?? []).some(
+        (order) => !['completed', 'cancelled'].includes(order.status),
+      ),
     }))
   } catch (error) {
-    console.error('Error al cargar el dashboard:', error)
+    console.error('Error al cargar las mesas:', error)
+    loadError.value = 'No se pudieron cargar las mesas'
   }
 })
 
@@ -60,11 +37,7 @@ function formatCurrency(value: number): string {
   }).format(value)
 }
 
-const allOrders = computed(() =>
-  dashboardOrders.value.length > 0
-    ? dashboardOrders.value
-    : ordersStore.orders
-)
+const allOrders = computed(() => ordersStore.orders)
 
 const activeOrders = computed(() =>
   allOrders.value.filter(order =>
@@ -78,9 +51,7 @@ const occupiedTables = computed(() =>
     : new Set(activeOrders.value.map(order => order.tableNumber)).size
 )
 
-const availableProducts = computed(() =>
-  productsStore.products.filter(product => product.available).length
-)
+const availableProducts = computed(() => productsStore.availableProducts.length)
 
 const todaySales = computed(() => {
   const today = new Date().toDateString()
@@ -136,7 +107,7 @@ const stats = computed(() => [
   },
   {
     label: 'Mesas ocupadas',
-    value: `${occupiedTables.value} / 8`,
+    value: `${occupiedTables.value} / ${tableData.value.length || 8}`,
     icon: '▦',
     note: 'Mesas con pedidos activos'
   },

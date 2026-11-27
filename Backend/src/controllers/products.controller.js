@@ -1,9 +1,9 @@
+// Controlador de productos: recibe la petición, llama al servicio y responde.
 const productsService = require('../services/products.service')
 
 async function getProducts(req, res, next) {
   try {
-    const products = await productsService.getAll()
-    res.json(products)
+    res.json(await productsService.getAll())
   } catch (error) {
     next(error)
   }
@@ -11,15 +11,7 @@ async function getProducts(req, res, next) {
 
 async function getProductById(req, res, next) {
   try {
-    const product = await productsService.getById(Number(req.params.id))
-
-    if (!product) {
-      return res.status(404).json({
-        mensaje: 'Producto no encontrado'
-      })
-    }
-
-    res.json(product)
+    res.json(await productsService.getById(req.params.id))
   } catch (error) {
     next(error)
   }
@@ -27,8 +19,7 @@ async function getProductById(req, res, next) {
 
 async function createProduct(req, res, next) {
   try {
-    const product = await productsService.create(req.body)
-    res.status(201).json(product)
+    res.status(201).json(await productsService.create(req.body))
   } catch (error) {
     next(error)
   }
@@ -36,18 +27,7 @@ async function createProduct(req, res, next) {
 
 async function updateProduct(req, res, next) {
   try {
-    const product = await productsService.update(
-      Number(req.params.id),
-      req.body
-    )
-
-    if (!product) {
-      return res.status(404).json({
-        mensaje: 'Producto no encontrado'
-      })
-    }
-
-    res.json(product)
+    res.json(await productsService.update(req.params.id, req.body))
   } catch (error) {
     next(error)
   }
@@ -55,17 +35,8 @@ async function updateProduct(req, res, next) {
 
 async function deleteProduct(req, res, next) {
   try {
-    const deleted = await productsService.delete(Number(req.params.id))
-
-    if (!deleted) {
-      return res.status(404).json({
-        mensaje: 'Producto no encontrado'
-      })
-    }
-
-    res.json({
-      mensaje: 'Producto desactivado correctamente'
-    })
+    await productsService.delete(req.params.id)
+    res.json({ mensaje: 'Producto desactivado correctamente' })
   } catch (error) {
     next(error)
   }

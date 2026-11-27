@@ -1,36 +1,33 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+// Estructura general de la app: menú lateral, barra superior y el espacio
+// donde se muestra cada pantalla. El menú solo muestra las opciones que el
+// rol del usuario puede usar.
+import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { ROLE_LABELS, type Role } from '../types/models'
 
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 
-function logout() {
-  auth.logout()
-  router.replace('/login')
+async function logout() {
+  await auth.logout()
+  await router.replace('/login')
 }
 
 const online = ref(navigator.onLine)
 
-function updateConnection() {
-  online.value = navigator.onLine
-  console.log('Estado de conexión:', online.value)
-}
-
 function handleOffline() {
   online.value = false
-  console.log('Evento offline detectado')
 }
 
 function handleOnline() {
   online.value = true
-  console.log('Evento online detectado')
 }
 
 onMounted(() => {
-  updateConnection()
-
+  online.value = navigator.onLine
   window.addEventListener('online', handleOnline)
   window.addEventListener('offline', handleOffline)
 })
@@ -40,17 +37,32 @@ onUnmounted(() => {
   window.removeEventListener('offline', handleOffline)
 })
 
-const menuItems = [
+interface MenuItem {
+  label: string
+  icon: string
+  to: string
+  roles?: Role[]
+}
+
+const allMenuItems: MenuItem[] = [
   { label: 'Dashboard', icon: '▦', to: '/' },
   { label: 'Punto de venta', icon: '＋', to: '/sales' },
   { label: 'Mesas', icon: '▤', to: '/tables' },
   { label: 'Productos', icon: '◇', to: '/products' },
-  { label: 'Categorías', icon: '▧', to: '/categories' },
+  { label: 'Categorías', icon: '▧', to: '/categories', roles: ['admin'] },
   { label: 'Pedidos', icon: '☷', to: '/orders' },
-  { label: 'Inventario', icon: '▤', to: '/inventory' },
-  { label: 'Historial de ventas', icon: '▥', to: '/sales-history' },
+  { label: 'Inventario', icon: '▤', to: '/inventory', roles: ['admin', 'cashier'] },
+  { label: 'Historial de ventas', icon: '▥', to: '/sales-history', roles: ['admin', 'cashier'] },
   { label: 'Sincronización', icon: '⟳', to: '/sync' },
+  { label: 'Mis sesiones', icon: '⚿', to: '/sessions' },
 ]
+
+const menuItems = computed(() =>
+  allMenuItems.filter((item) => !item.roles || auth.hasRole(...item.roles)),
+)
+
+const roleLabel = computed(() => (auth.role ? ROLE_LABELS[auth.role] : ''))
+const pageTitle = computed(() => route.meta.title ?? 'Panel de control')
 </script>
 
 <template>
@@ -94,7 +106,7 @@ const menuItems = [
       <div class="sidebar-user">
         <div>
           <strong>{{ auth.user?.username }}</strong>
-          <small>{{ auth.user?.role === 'admin' ? 'Administrador' : auth.user?.role }}</small>
+          <small>{{ roleLabel }}</small>
         </div>
         <button type="button" class="logout-btn" @click="logout">Salir</button>
       </div>
@@ -104,7 +116,7 @@ const menuItems = [
       <header class="topbar">
         <div>
           <p class="eyebrow">GESTIÓN DEL RESTAURANTE</p>
-          <h1>Panel de control</h1>
+          <h1>{{ pageTitle }}</h1>
         </div>
 
         <div
@@ -118,6 +130,7 @@ const menuItems = [
             :class="{ offline: !online }"
           ></span>
           <span>{{ online ? 'En línea' : 'Sin conexión' }}</span>
+          <span v-if="auth.offlineMode && online" class="offline-session">· reconectando sesión</span>
         </div>
       </header>
 

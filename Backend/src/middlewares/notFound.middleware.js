@@ -1,7 +1,8 @@
+// Responde 404 cuando se pide una ruta de la API que no existe.
+const AppError = require('../utils/AppError')
 
-export const notFound = (req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `Ruta no encontrada: ${req.method} ${req.originalUrl}`
-  })
+function notFound(req, res, next) {
+  next(AppError.notFound(`Ruta no encontrada: ${req.method} ${req.originalUrl}`))
 }
+
+module.exports = notFound
