@@ -4,6 +4,7 @@ import { useProductsStore } from '../stores/products'
 import { useOrdersStore } from '../stores/orders'
 import { tablesService } from '../services/tables.service'
 import StatCard from '../components/StatCard.vue'
+import { formatCurrency, statusLabel } from '../utils/format'
 
 const productsStore = useProductsStore()
 const ordersStore = useOrdersStore()
@@ -29,26 +30,14 @@ onMounted(async () => {
   }
 })
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('es-CO', {
-    style: 'currency',
-    currency: 'COP',
-    maximumFractionDigits: 0
-  }).format(value)
-}
-
 const allOrders = computed(() => ordersStore.orders)
 
-const activeOrders = computed(() =>
-  allOrders.value.filter(order =>
-    !['Entregado', 'Cancelado', 'completed', 'cancelled'].includes(order.status)
-  )
-)
+const activeOrders = computed(() => ordersStore.activeOrders)
 
 const occupiedTables = computed(() =>
   tableData.value.length
     ? tableData.value.filter(table => table.occupied).length
-    : new Set(activeOrders.value.map(order => order.tableNumber)).size
+    : new Set(activeOrders.value.map(order => order.table_number)).size
 )
 
 const availableProducts = computed(() => productsStore.availableProducts.length)
@@ -58,20 +47,13 @@ const todaySales = computed(() => {
 
   return allOrders.value
     .filter(order =>
-      ['Entregado', 'completed'].includes(order.status) &&
-      order.createdAt &&
-      new Date(order.createdAt).toDateString() === today
+      order.status === 'completed' &&
+      new Date(order.created_at).toDateString() === today
     )
     .reduce((total, order) => total + Number(order.total || 0), 0)
 })
 
-const recentOrders = computed(() =>
-  [...allOrders.value]
-    .sort((a, b) =>
-      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    )
-    .slice(0, 5)
-)
+const recentOrders = computed(() => ordersStore.sortedOrders.slice(0, 5))
 
 const tables = computed(() =>
   tableData.value.length
@@ -82,7 +64,7 @@ const tables = computed(() =>
     : Array.from({ length: 8 }, (_, index) => {
         const number = index + 1
         const occupied = activeOrders.value.some(
-          order => Number(order.tableNumber) === number
+          order => Number(order.table_number) === number
         )
 
         return {
@@ -171,10 +153,10 @@ const stats = computed(() => [
             <tbody>
               <tr v-for="order in recentOrders" :key="order.id">
                 <td>
-                  <strong>#PED-{{ String(order.id).padStart(6, '0') }}</strong>
+                  <strong>{{ order.order_number }}</strong>
                 </td>
 
-                <td>Mesa {{ order.tableNumber }}</td>
+                <td>Mesa {{ order.table_number ?? order.table_id }}</td>
 
                 <td>{{ formatCurrency(Number(order.total || 0)) }}</td>
 
@@ -182,12 +164,12 @@ const stats = computed(() => [
                   <span
                     class="status-pill"
                     :class="{
-                      pending: ['Pendiente', 'En preparación'].includes(order.status),
-                      preparing: order.status === 'Listo',
-                      ready: order.status === 'Entregado'
+                      pending: ['pending', 'preparing'].includes(order.status),
+                      preparing: order.status === 'ready',
+                      ready: order.status === 'completed'
                     }"
                   >
-                    {{ order.status }}
+                    {{ statusLabel(order.status) }}
                   </span>
                 </td>
               </tr>

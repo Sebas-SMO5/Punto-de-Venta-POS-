@@ -158,9 +158,10 @@ requisitos de la guía de grado.
 | **Pinia** | Tiendas de ejemplo y pedidos guardados en `localStorage`. | Tiendas normalizadas con estados de carga, error y caché. |
 | **Navigation Guards asíncronos** | Guard síncrono. | Guard asíncrono que recupera la sesión y revisa el rol. |
 | **Axios con reintentos** | Sin reintentos. | Reintento automático con espera creciente + renovación de sesión automática. |
-| **Pruebas** | Ninguna. | 49 pruebas del backend, 21 unitarias del frontend y 4 de punta a punta. Todas pasan. |
+| **Pruebas** | Ninguna. | 49 pruebas del backend, 36 unitarias y de componentes del frontend y 4 de punta a punta. Todas pasan. |
 | **CI** | No existía. | GitHub Actions corre todas las pruebas en cada Pull Request. |
-| **Despliegue** | No existía. | Archivo `render.yaml` listo para Render (falta crear la cuenta y conectarlo). |
+| **Despliegue** | No existía. | Desplegado en Render: https://pos-restaurante-y2m9.onrender.com |
+| **Pantallas sobrecargadas** | `SalesView.vue` tenía 947 líneas y repetía casi todo `OrdersView.vue`. | Divididas en componentes reutilizables, un composable de acciones y tiendas de Pinia. Cada pantalla quedó en unas 80 líneas. |
 | **Código sin uso** | Rutas y servicios rotos, archivos vacíos, plantillas. | Eliminados. |
 
 ### Archivos eliminados (y por qué)
@@ -494,9 +495,8 @@ responden.
 
 | Archivo | Para qué sirve |
 |---|---|
-| ✏️ `package.json` | Librerías y comandos (`dev`, `build`, `test:unit`, `test:e2e`). Se agregaron `vitest`, `fake-indexeddb` y `@playwright/test`. |
-| ✏️ `vite.config.ts` | Configuración de Vite. Ahora **reenvía `/api` al backend** en desarrollo, para que página y API parezcan estar en el mismo sitio. |
-| 🆕 `vitest.config.ts` | Configuración de las pruebas unitarias. |
+| ✏️ `package.json` | Librerías y comandos (`dev`, `build`, `test:unit`, `test:e2e`). Se agregaron `vitest`, `@vue/test-utils`, `jsdom`, `fake-indexeddb` y `@playwright/test`. |
+| ✏️ `vite.config.ts` | Configuración de Vite. Ahora **reenvía `/api` al backend** en desarrollo, para que página y API parezcan estar en el mismo sitio, y configura las pruebas de Vitest. |
 | 🆕 `playwright.config.ts` | Configuración de las pruebas de punta a punta: compila la app y enciende el backend en el puerto 3100. |
 | ✏️ `index.html` | Página base. Se agregó el manifiesto (para instalar la app). |
 | `tsconfig*.json`, `eslint.config.ts`, `.oxlintrc.json`, `.prettierrc.json` | Reglas de TypeScript, de estilo y de revisión de código. |
@@ -540,7 +540,8 @@ responden.
 |---|---|
 | ✏️ `auth.ts` | Usuario conectado, rol, login, logout, sesiones. Solo guarda en el navegador el **perfil** (id, nombre, rol), nunca tokens. |
 | ✏️ `products.ts` | Productos **normalizados** (por id), con `loading`, `error` y caché de 1 minuto. |
-| ✏️ `orders.ts` | Pedidos normalizados, con `loading`, `error` y caché. Antes guardaba pedidos en `localStorage`, separados de la base real. |
+| ✏️ `orders.ts` | **Única fuente de pedidos** para todas las pantallas: normalizados, con `loading`, `error` y caché, y acciones para crear, entregar y cancelar. Antes guardaba pedidos en `localStorage`, separados de la base real. |
+| 🆕 `sales.ts` | Ventas y medios de pago: cobrar con o sin conexión y saber si un pedido ya se cobró. |
 
 **`offline/`** — el corazón del Offline-First
 
@@ -559,8 +560,8 @@ responden.
 |---|---|
 | ✏️ `LoginView.vue` | Inicio de sesión, con botón para ver la contraseña y mensajes de error claros. |
 | ✏️ `DashboardView.vue` | Resumen del día. Ahora usa las tiendas de Pinia. |
-| ✏️ `SalesView.vue` | Punto de venta: crear pedidos y cobrar (también sin internet). |
-| ✏️ `OrdersView.vue` | Lista de pedidos, entregar, cancelar y cobrar. |
+| ✏️ `SalesView.vue` | Punto de venta: crear pedidos y cobrar (también sin internet). Ahora solo arma componentes. |
+| ✏️ `OrdersView.vue` | Lista de pedidos, entregar, cancelar y cobrar. Usa los mismos componentes que el punto de venta. |
 | ✏️ `TablesView.vue` | Mesas y sus pedidos activos. Ahora se puede entregar o cancelar **sin internet**. |
 | ✏️ `ProductsView.vue` | Menú de productos. Ahora funciona sin internet, envía la versión y avisa si hay conflicto. Solo el admin ve los botones de editar. |
 | ✏️ `CategoriesView.vue` | Categorías (solo admin), con versión para detectar conflictos. |
@@ -574,6 +575,15 @@ responden.
 |---|---|
 | ✏️ `layouts/MainLayout.vue` | Menú lateral (**solo muestra opciones según el rol**), barra superior con el título de la pantalla y estado de conexión. |
 | `components/StatCard.vue` | Tarjeta de estadística del panel. |
+| 🆕 `components/orders/OrdersTable.vue` | Tabla de pedidos con sus botones. No hace nada por sí sola: **avisa** (emite) a la pantalla cuando se hace clic. |
+| 🆕 `components/orders/NewOrderModal.vue` | Ventana para registrar un pedido nuevo (mesa, carrito y observaciones). |
+| 🆕 `components/orders/SaleModal.vue` | Ventana para cobrar: total y medio de pago. |
+| 🆕 `components/orders/OrdersSummary.vue` | Las tres tarjetas de resumen de pedidos. |
+| 🆕 `components/orders/__tests__/` | Pruebas de los componentes (se montan y se les hace clic, como lo haría una persona). |
+| 🆕 `composables/useCart.ts` | El carrito del pedido nuevo (agregar, sumar, restar, total). |
+| 🆕 `composables/useOrderActions.ts` | Entregar, cancelar y cobrar, con sus mensajes. Antes estaba copiado en dos pantallas. |
+| 🆕 `composables/__tests__/useCart.test.ts` | Pruebas del carrito. |
+| 🆕 `utils/format.ts` | Mostrar dinero (`$ 18.000`), fechas y el estado del pedido en español. |
 | 🆕 `types/models.ts` | Los **tipos** de TypeScript (Usuario, Producto, Pedido…). Gracias a ellos no queda ningún `any`. |
 | `assets/styles.css` | Estilos generales. |
 
@@ -591,7 +601,7 @@ responden.
 | Tipo | Cantidad | Comando | Qué necesita |
 |---|---|---|---|
 | Backend unitarias + integración | 49 | `cd Backend && npm test` | PostgreSQL encendido (las de integración se saltan si no hay base) |
-| Frontend unitarias | 21 | `cd Frontend && npm run test:unit` | Nada |
+| Frontend unitarias y de componentes | 36 | `cd Frontend && npm run test:unit` | Nada |
 | Punta a punta (E2E) | 4 | `cd Frontend && npm run test:e2e` | PostgreSQL y Chrome de Playwright (`npx playwright install chromium` la primera vez) |
 | Revisión de tipos | — | `cd Frontend && npm run type-check` | Nada |
 
@@ -606,47 +616,45 @@ responden.
 
 ## 8. Cómo subirlo a la nube
 
-El proyecto está listo para **Render** (tiene plan gratuito):
+La aplicación **ya está publicada** en Render:
+**https://pos-restaurante-y2m9.onrender.com**
 
-1. Crear una cuenta en https://render.com e iniciar sesión con GitHub.
-2. Clic en **New → Blueprint** y elegir el repositorio.
-3. Render lee `render.yaml` y crea la base de datos y el servicio web.
-4. Esperar a que termine (unos minutos). Render da una dirección como
-   `https://pos-restaurante.onrender.com`.
-5. Crear el usuario administrador desde la pestaña **Shell** del servicio:
-   ```bash
-   cd Backend && npm run create-user -- admin UnaClaveSegura123 admin "Administrador"
-   ```
+Cómo se hizo (por si hay que repetirlo):
+
+1. En https://render.com, iniciar sesión con GitHub.
+2. **New → Blueprint**, elegir el repositorio y la rama.
+3. Render lee `render.yaml` y crea la base de datos (`pos-db`) y el servicio
+   web (`pos-restaurante`).
+4. En el servicio, pestaña **Environment**, crear `ADMIN_USERNAME` y
+   `ADMIN_PASSWORD`. Al arrancar, el servidor crea ese administrador si no
+   existe (así no se necesita la consola de Render, que es de pago).
+5. Cada vez que se suben cambios a la rama elegida, Render vuelve a
+   desplegar solo.
 
 **¿Por qué un solo servicio?** El backend entrega también la página compilada.
 Así página y API tienen **la misma dirección** y la cookie `SameSite=Strict`
 funciona sin trucos.
 
-> El plan gratuito de Render "duerme" el servicio si no se usa; la primera
-> visita puede tardar unos 30 segundos.
+> El plan gratuito "duerme" el servicio si no se usa: la primera visita puede
+> tardar unos 50 segundos. La base de datos gratuita de Render vence después de
+> un tiempo; revisar la fecha en el panel de `pos-db`.
 
 ---
 
 ## 9. Lo que todavía queda por hacer
 
-Para ser honestos con lo que falta frente a la rúbrica:
-
-1. **Desplegar de verdad en la nube.** La configuración está lista, pero hay que
-   crear la cuenta de Render y conectar el repositorio (sección 8).
-2. **Flujo de Git con Pull Requests.** Las ramas `main` y `develop` todavía no
-   tienen el login ni estos cambios. Hay que subir la rama y unirla con
-   **Pull Requests**, que la rúbrica revisa.
-3. **Pantallas grandes.** `SalesView.vue` (más de 900 líneas) y `OrdersView.vue`
-   mezclan varias responsabilidades y repiten lógica entre ellas. Convendría
-   dividirlas en componentes más pequeños (la rúbrica habla de "vistas
-   sobrecargadas").
-4. **Tablas sin usar.** La base tiene tablas que la aplicación no usa
+1. **Pull Requests.** Unir `M_Frontend` → `develop` → `main` con Pull Requests
+   revisados por el equipo. Al abrirlos, GitHub corre todas las pruebas
+   automáticamente (`.github/workflows/ci.yml`). Después, en Render, cambiar la
+   rama del Blueprint a `main`.
+2. **Tablas sin usar.** La base tiene tablas que la aplicación no usa
    (`devices`, `sync_operations`, `sync_conflicts`, cajas registradoras,
-   ingredientes, recetas). Se pueden usar en el futuro o explicar en la
-   sustentación que son para próximas versiones.
-5. **Contraseñas de `mesero2` y `cajero2`.** Se cifraron sus valores de prueba
-   antiguos, pero nadie los conoce. Si se necesitan, se les pone una nueva con
-   `npm run create-user`.
+   ingredientes, recetas). Se pueden presentar como trabajo futuro.
+3. **Contraseñas de `mesero2` y `cajero2`** (solo en la base local de
+   Sebastián): se cifraron sus valores de prueba antiguos, que nadie conoce.
+   Si se necesitan, se cambian con `npm run create-user`.
+
+El guion para la sustentación está en [GUION_SUSTENTACION.md](GUION_SUSTENTACION.md).
 
 ---
 

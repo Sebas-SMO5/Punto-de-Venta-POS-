@@ -106,3 +106,52 @@ export interface ServerOrder {
   tableNumber?: number
   createdAt?: string
 }
+
+// Producto agregado al carrito de un pedido nuevo
+export interface CartItem {
+  productId: number
+  name: string
+  price: number
+  quantity: number
+}
+
+// Pedido en el formato que usan las pantallas
+export interface PosOrderItem {
+  id: number
+  productId: number
+  name: string
+  quantity: number
+  price: number
+  subtotal: number
+}
+
+export interface PosOrder {
+  id: number
+  order_number: string
+  table_id: number
+  table_number: number | null
+  items: PosOrderItem[]
+  notes: string
+  total: number
+  status: string
+  created_at: string
+}
+
+// Venta guardada en el dispositivo (las sin conexión tienen pendingSync)
+export interface LocalSale {
+  id: number
+  order_id: number
+  sale_number: string
+  created_at?: string
+  total?: number
+  status?: string
+  items?: PosOrderItem[]
+  payments?: {
+    id: number
+    amount: number
+    status: string
+    method: string
+    reference: string | null
+  }[]
+  pendingSync?: boolean
+}

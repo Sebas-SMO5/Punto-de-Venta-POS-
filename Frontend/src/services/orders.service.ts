@@ -2,7 +2,7 @@
 // Cada pedido creado sin conexión lleva un "localId" (UUID). Si se envía
 // dos veces al servidor, el servidor lo reconoce y no lo duplica.
 import { api, isConnectionError } from './api'
-import type { OrderItem } from '../stores/orders'
+import type { CartItem } from '../types/models'
 import type { OrderStatus, ServerOrder } from '../types/models'
 import { readStore, writeRecord } from '../offline/db'
 import { addOperation } from '../offline/queue'
@@ -70,7 +70,7 @@ export const ordersService = {
     return response.data
   },
 
-  async create(tableId: number, items: OrderItem[], notes = ''): Promise<ServerOrder> {
+  async create(tableId: number, items: CartItem[], notes = ''): Promise<ServerOrder> {
     if (!tableId || items.length === 0) {
       throw new Error('Selecciona una mesa y agrega productos al pedido')
     }

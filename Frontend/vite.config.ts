@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url'
 
 import { defineConfig } from 'vite'
@@ -11,6 +12,12 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  // Pruebas unitarias y de componentes (Vitest). Solo se buscan en src/;
+  // las E2E de la carpeta e2e/ las ejecuta Playwright.
+  test: {
+    include: ['src/**/*.test.ts'],
+    environment: 'node',
   },
   server: {
     // En desarrollo, las peticiones a /api se reenvían al backend.
