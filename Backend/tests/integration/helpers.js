@@ -116,6 +116,7 @@ async function cleanup() {
       await pool.query('DELETE FROM orders WHERE id = ANY($1::bigint[])', [orderIds])
     }
 
+    await pool.query('DELETE FROM inventory_movements WHERE user_id = ANY($1::int[])', [ids])
     await pool.query('DELETE FROM refresh_tokens WHERE user_id = ANY($1::int[])', [ids])
     await pool.query('DELETE FROM users WHERE id = ANY($1::int[])', [ids])
   }
@@ -124,6 +125,7 @@ async function cleanup() {
   const productIds = products.rows.map(p => p.id)
 
   if (productIds.length) {
+    await pool.query('DELETE FROM inventory_movements WHERE product_id = ANY($1::int[])', [productIds])
     await pool.query('DELETE FROM inventory WHERE product_id = ANY($1::int[])', [productIds])
     await pool.query('DELETE FROM products WHERE id = ANY($1::int[])', [productIds])
   }

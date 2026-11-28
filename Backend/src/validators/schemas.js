@@ -107,7 +107,70 @@ const saleCreateBody = z
   })
   .strict()
 
+// Movimiento de inventario:
+//  entry      -> entrada de mercancía: SUMA "quantity" al stock
+//  adjustment -> conteo físico: el stock QUEDA en "quantity" (solo admin)
+const inventoryMovementBody = z
+  .object({
+    productId: positiveInt,
+    type: z.enum(['entry', 'adjustment'], { error: 'Tipo de movimiento inválido' }),
+    quantity: z.coerce
+      .number({ error: 'La cantidad debe ser un número' })
+      .min(0, 'La cantidad no puede ser negativa')
+      .max(1_000_000),
+    reason: safeText(200).optional().default(''),
+    localId: z.uuid('Identificador local inválido').optional()
+  })
+  .strict()
+  .refine(data => data.type !== 'entry' || data.quantity > 0, {
+    message: 'La cantidad de la entrada debe ser mayor que cero',
+    path: ['quantity']
+  })
+
+const movementsQuery = z.object({
+  productId: positiveInt.optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional().default(50)
+})
+
+const username = z
+  .string()
+  .trim()
+  .min(3, 'El usuario debe tener al menos 3 caracteres')
+  .max(50)
+  .regex(/^[a-zA-Z0-9_.-]+$/, 'El usuario solo puede tener letras, números, punto, guion y guion bajo')
+
+const password = z
+  .string()
+  .min(8, 'La contraseña debe tener al menos 8 caracteres')
+  .max(200)
+
+const userCreateBody = z
+  .object({
+    username,
+    password,
+    fullName: safeText(100).min(1, 'El nombre es obligatorio'),
+    role: z.enum(ROLES, { error: 'Rol inválido' }),
+    email: z.email('Correo inválido').max(100).optional()
+  })
+  .strict()
+
+const userUpdateBody = z
+  .object({
+    fullName: safeText(100).min(1, 'El nombre es obligatorio'),
+    role: z.enum(ROLES, { error: 'Rol inválido' }),
+    active: z.boolean(),
+    password,
+    email: z.email('Correo inválido').max(100).nullable()
+  })
+  .partial()
+  .strict()
+  .refine(data => Object.keys(data).length > 0, { message: 'No hay cambios para guardar' })
+
 module.exports = {
+  inventoryMovementBody,
+  movementsQuery,
+  userCreateBody,
+  userUpdateBody,
   ROLES,
   ORDER_STATUSES,
   idParam,

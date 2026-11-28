@@ -1,4 +1,4 @@
-# Guion para la sustentación (demo de ~15 minutos)
+# Guion para la sustentación (demo de ~17 minutos)
 
 Este guion muestra, en orden, cada requisito de la guía con algo que el jurado
 pueda **ver**. Al lado de cada paso está qué decir y qué criterio de la rúbrica
@@ -8,8 +8,8 @@ cubre.
 
 - [ ] Abrir la app en la nube **5 minutos antes** (el plan gratis tarda en
       "despertar"): https://pos-restaurante-y2m9.onrender.com
-- [ ] Tener creados en la nube: un **admin**, un **cajero** y un **mesero**
-      (`npm run create-user` contra la base de Render, o variables `ADMIN_*`).
+- [ ] Tener creados en la nube: un **admin** (variables `ADMIN_*` de Render),
+      y un **cajero** y un **mesero** (desde la pantalla **Usuarios**).
 - [ ] Usar **Google Chrome**. Abrir las herramientas de desarrollador (`F12`)
       en las pestañas **Application** y **Network**.
 - [ ] Tener abierto en VS Code: `Frontend/src/offline/syncRules.ts`,
@@ -98,7 +98,17 @@ Abrir **dos ventanas** como admin (una normal y otra de incógnito).
 `SELECT ... FOR UPDATE` dentro de una transacción; si el stock no alcanza, la
 venta offline queda como conflicto para reintentar o descartar.
 
-## 6. Arquitectura y calidad (2 min) — *Arquitectura + Frontend*
+## 6. Inventario y usuarios (2 min) — *Lógica de negocio*
+
+1. Como admin, en **Usuarios**: crear un cajero nuevo en vivo y mostrar que
+   puede entrar. Desactivarlo: su sesión se cierra al instante.
+2. En **Inventario**: registrar una **entrada** (+10) y mostrar el historial de
+   movimientos con quién la hizo.
+3. Poner **Offline** y registrar otra entrada: se guarda y se sincroniza al
+   volver. Explicar por qué las entradas sí funcionan offline (solo suman) y
+   los **ajustes** no (dejan un número exacto y podrían borrar ventas).
+
+## 7. Arquitectura y calidad (2 min) — *Arquitectura + Frontend*
 
 - Backend: `routes → middlewares → controllers → services → repositories`.
 - `Backend/src/domain/orderRules.js`: reglas puras, fáciles de probar.
@@ -107,12 +117,12 @@ venta offline queda como conflicto para reintentar o descartar.
 - Pantallas divididas en componentes (`components/orders/`).
 - Logs JSON con `x-correlation-id` (mostrar una respuesta en Network).
 
-## 7. Pruebas, Git y nube (1 min) — *Testing, Git y Despliegue*
+## 8. Pruebas, Git y nube (1 min) — *Testing, Git y Despliegue*
 
 ```bash
-cd Backend && npm test          # 49 pruebas (unitarias + integración)
-cd Frontend && npm run test:unit  # 36 pruebas (unitarias + componentes)
-cd Frontend && npm run test:e2e   # 4 pruebas en Chrome, incluido el flujo offline
+cd Backend && npm test          # 63 pruebas (unitarias + integración)
+cd Frontend && npm run test:unit  # 46 pruebas (unitarias + componentes)
+cd Frontend && npm run test:e2e   # 6 pruebas en Chrome, incluido el flujo offline
 ```
 
 - Mostrar en GitHub los Pull Requests y la pestaña **Actions** (CI en verde).

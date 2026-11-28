@@ -22,6 +22,7 @@ import OrdersView from '../views/OrdersView.vue'
 import SalesHistoryView from '../views/SalesHistoryView.vue'
 import SyncView from '../views/SyncView.vue'
 import SessionsView from '../views/SessionsView.vue'
+import UsersView from '../views/UsersView.vue'
 import { useAuthStore } from '../stores/auth'
 import type { Role } from '../types/models'
 
@@ -94,6 +95,12 @@ const router = createRouter({
           name: 'sync',
           component: SyncView,
           meta: { title: 'Sincronización' },
+        },
+        {
+          path: 'users',
+          name: 'users',
+          component: UsersView,
+          meta: { title: 'Usuarios', roles: ['admin'] },
         },
         {
           path: 'sessions',

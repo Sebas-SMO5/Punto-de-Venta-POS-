@@ -53,6 +53,7 @@ const allMenuItems: MenuItem[] = [
   { label: 'Pedidos', icon: '☷', to: '/orders' },
   { label: 'Inventario', icon: '▤', to: '/inventory', roles: ['admin', 'cashier'] },
   { label: 'Historial de ventas', icon: '▥', to: '/sales-history', roles: ['admin', 'cashier'] },
+  { label: 'Usuarios', icon: '☺', to: '/users', roles: ['admin'] },
   { label: 'Sincronización', icon: '⟳', to: '/sync' },
   { label: 'Mis sesiones', icon: '⚿', to: '/sessions' },
 ]

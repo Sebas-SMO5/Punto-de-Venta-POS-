@@ -58,7 +58,7 @@ function toLocalRecord(value: unknown): LocalRecord | null {
   const normalized: LocalRecord = { ...record, id }
 
   // PostgreSQL devuelve los números decimales como texto: se convierten
-  for (const key of ['price', 'current_stock', 'minimum_stock', 'total']) {
+  for (const key of ['price', 'current_stock', 'minimum_stock', 'total', 'stock', 'minimum']) {
     if (typeof normalized[key] === 'string') normalized[key] = Number(normalized[key])
   }
 
@@ -228,6 +228,20 @@ async function sendSale(op: PendingOperation): Promise<void> {
   if (Number.isSafeInteger(localSaleId) && localSaleId < 0) await deleteLocalData('sales', localSaleId)
 }
 
+// Entrada de inventario hecha sin conexión. Lleva localId: si se envía dos
+// veces, el servidor no suma dos veces.
+async function sendInventory(op: PendingOperation): Promise<void> {
+  const { data } = await api.post<LocalRecord>('/inventory/movements', {
+    productId: Number(op.data.productId),
+    type: 'entry',
+    quantity: Number(op.data.quantity),
+    reason: op.data.reason ?? '',
+    localId: op.data.localId ?? op.operationId,
+  })
+
+  await saveServerRecord('inventory', data)
+}
+
 async function sendOperation(op: PendingOperation): Promise<void> {
   switch (op.entity) {
     case 'products':
@@ -238,6 +252,8 @@ async function sendOperation(op: PendingOperation): Promise<void> {
       return sendOrder(op)
     case 'sales':
       return sendSale(op)
+    case 'inventory':
+      return sendInventory(op)
     default:
       throw new Error(`La sincronización de ${op.entity} no está disponible`)
   }

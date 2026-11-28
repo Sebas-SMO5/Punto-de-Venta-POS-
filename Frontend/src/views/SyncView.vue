@@ -27,6 +27,7 @@ const ENTITY_LABELS: Record<string, string> = {
   orders: 'Pedido',
   sales: 'Venta',
   tables: 'Mesa',
+  inventory: 'Entrada de inventario',
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -56,6 +57,10 @@ const pendingCount = computed(
 const errorCount = computed(() => operations.value.filter((op) => op.status === 'error').length)
 
 function describe(op: PendingOperation): string {
+  if (op.entity === 'inventory') {
+    return `Entrada de ${String(op.data.quantity)} unidades de "${String(op.data.productName ?? op.data.productId)}"`
+  }
+
   const name = typeof op.data.name === 'string' ? ` "${op.data.name}"` : ''
   return `${TYPE_LABELS[op.type] ?? op.type} ${ENTITY_LABELS[op.entity]?.toLowerCase() ?? op.entity}${name}`
 }

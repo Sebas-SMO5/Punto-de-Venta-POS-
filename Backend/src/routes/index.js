@@ -18,5 +18,6 @@ router.use('/tables', require('./tables.routes'))
 router.use('/orders', require('./orders.routes'))
 router.use('/sales', require('./sales.routes'))
 router.use('/payment-methods', require('./paymentMethods.routes'))
+router.use('/users', require('./users.routes'))
 
 module.exports = router

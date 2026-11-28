@@ -4,7 +4,7 @@
 // pendientes (syncQueue) que se enviarán al servidor al volver la conexión.
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 
-export type SyncEntity = 'products' | 'categories' | 'tables' | 'orders' | 'sales'
+export type SyncEntity = 'products' | 'categories' | 'tables' | 'orders' | 'sales' | 'inventory'
 export type OperationType = 'CREATE' | 'UPDATE' | 'DELETE'
 
 // pending    -> esperando para enviarse

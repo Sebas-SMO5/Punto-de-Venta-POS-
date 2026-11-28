@@ -148,7 +148,7 @@ requisitos de la guía de grado.
 | **Límite de intentos** | No existía. | Máximo 10 intentos fallidos de login cada 15 minutos; 300 peticiones por minuto en general. |
 | **Cabeceras de seguridad** | No existían. | `helmet` agrega cabeceras de seguridad del navegador. |
 | **Migraciones** | La carpeta `database/` estaba vacía: nadie podía recrear la base. | 3 migraciones versionadas + datos iniciales + comando `npm run migrate`. |
-| **Conflictos de sincronización** | Si algo fallaba, la operación quedaba en "error" para siempre. | Reglas **determinísticas** (ver sección 5.7), pantalla para resolver conflictos e historial. |
+| **Conflictos de sincronización** | Si algo fallaba, la operación quedaba en "error" para siempre. | Reglas **determinísticas** (ver sección 5.8), pantalla para resolver conflictos e historial. |
 | **Bloqueo optimista** | No existía. | Productos y categorías tienen `version`; si alguien edita con una versión vieja → conflicto 409. |
 | **Service Worker** | Existía un archivo, pero **nunca se registraba**. | Registrado y probado: la app abre sin internet aunque se recargue. |
 | **Logs con x-correlation-id** | `console.log` sueltos. | Logs en formato JSON con un número de seguimiento por petición. |
@@ -158,10 +158,12 @@ requisitos de la guía de grado.
 | **Pinia** | Tiendas de ejemplo y pedidos guardados en `localStorage`. | Tiendas normalizadas con estados de carga, error y caché. |
 | **Navigation Guards asíncronos** | Guard síncrono. | Guard asíncrono que recupera la sesión y revisa el rol. |
 | **Axios con reintentos** | Sin reintentos. | Reintento automático con espera creciente + renovación de sesión automática. |
-| **Pruebas** | Ninguna. | 49 pruebas del backend, 36 unitarias y de componentes del frontend y 4 de punta a punta. Todas pasan. |
+| **Pruebas** | Ninguna. | 63 pruebas del backend, 46 unitarias y de componentes del frontend y 6 de punta a punta. Todas pasan. |
 | **CI** | No existía. | GitHub Actions corre todas las pruebas en cada Pull Request. |
 | **Despliegue** | No existía. | Desplegado en Render: https://pos-restaurante-y2m9.onrender.com |
 | **Pantallas sobrecargadas** | `SalesView.vue` tenía 947 líneas y repetía casi todo `OrdersView.vue`. | Divididas en componentes reutilizables, un composable de acciones y tiendas de Pinia. Cada pantalla quedó en unas 80 líneas. |
+| **Reponer inventario** | Cada venta descontaba stock, pero no había forma de volver a sumarlo. | Entradas de mercancía (también sin conexión) y ajustes por conteo físico, con historial de quién hizo cada movimiento. |
+| **Usuarios** | Solo se podían crear desde la terminal. | Pantalla "Usuarios" para que el administrador cree cuentas, cambie roles o contraseñas y desactive personas. |
 | **Código sin uso** | Rutas y servicios rotos, archivos vacíos, plantillas. | Eliminados. |
 
 ### Archivos eliminados (y por qué)
@@ -215,7 +217,9 @@ Si alguien roba la base de datos, no puede usar esas huellas para entrar.
 | Crear pedidos | ✅ | ✅ | ✅ |
 | Cambiar o cancelar **cualquier** pedido | ✅ | ✅ | ❌ (solo los suyos) |
 | Cobrar y ver ventas | ✅ | ✅ | ❌ |
-| Ver inventario | ✅ | ✅ | ❌ |
+| Ver inventario y registrar entradas de mercancía | ✅ | ✅ | ❌ |
+| Ajustar inventario por conteo físico | ✅ | ❌ | ❌ |
+| Crear y administrar usuarios | ✅ | ❌ | ❌ |
 | Crear o editar productos y categorías | ✅ | ❌ | ❌ |
 
 - Si alguien sin permiso intenta algo, la API responde **403 (prohibido)**.
@@ -273,7 +277,19 @@ la cookie.
 crear otro (**idempotencia**). Lo mismo con las ventas: un pedido solo se puede
 cobrar una vez.
 
-### 5.6 Los estados de un pedido (máquina de estados)
+### 5.6 Inventario: entradas y ajustes
+
+- **Entrada** ("llegaron 20 limonadas"): **suma** al stock. Funciona **sin
+  conexión**, porque sumar no choca con nada: si dos cajas registran +5 y +3,
+  el resultado es +8 sin importar el orden. Cada entrada lleva un identificador
+  único, así que aunque se envíe dos veces no se suma dos veces.
+- **Ajuste** ("conté y hay 18"): deja el stock en un número **exacto**. Solo el
+  administrador lo puede hacer y **necesita conexión**: si se hiciera sin
+  internet podría borrar ventas que otra caja registró mientras tanto.
+- Las ventas descuentan stock solas. Todo queda en el **historial de
+  movimientos** (quién, cuándo, cuánto y por qué).
+
+### 5.7 Los estados de un pedido (máquina de estados)
 
 Un pedido **solo puede avanzar**, nunca devolverse:
 
@@ -285,7 +301,7 @@ pendiente ──▶ en preparación ──▶ listo ──▶ entregado
 
 "Entregado" y "cancelado" son **finales**: ya no se pueden cambiar.
 
-### 5.7 Resolución DETERMINÍSTICA de conflictos
+### 5.8 Resolución DETERMINÍSTICA de conflictos
 
 "Determinística" significa que **ante la misma situación, siempre se toma la
 misma decisión**, sin importar quién llegó primero. Estas son las reglas
@@ -305,7 +321,7 @@ misma decisión**, sin importar quién llegó primero. Estas son las reglas
 Todo lo que se resuelve, automática o manualmente, queda en el **Historial de
 resolución** de la pantalla *Sincronización*.
 
-### 5.8 Logs con x-correlation-id
+### 5.9 Logs con x-correlation-id
 
 Cada petición recibe un **número de seguimiento** que se devuelve en la
 cabecera `x-correlation-id` y aparece en todas las líneas del log. Si un
@@ -316,14 +332,14 @@ petición. Los logs se escriben en formato JSON, por ejemplo:
 {"time":"2026-11-27T22:36:38.745Z","level":"warn","message":"Petición rechazada","correlationId":"942e8346-...","status":401,"path":"/api/products"}
 ```
 
-### 5.9 Cola de tareas en memoria
+### 5.10 Cola de tareas en memoria
 
 Algunas cosas no tienen que hacerse "ya mismo". Después de una venta, revisar
 si un producto quedó con poco stock se hace **en segundo plano**: la venta
 responde de inmediato y la revisión ocurre un instante después. Si la tarea
 falla, se reintenta hasta 3 veces.
 
-### 5.10 Migraciones
+### 5.11 Migraciones
 
 Una **migración** es un archivo SQL numerado que cambia la base de datos
 (crear una tabla, agregar una columna…). El comando `npm run migrate` aplica,
@@ -400,7 +416,8 @@ routes  →  middlewares  →  controllers  →  services  →  repositories  �
 | ✏️ `categories.routes.js` | `/api/categories`. Igual que productos. |
 | ✏️ `orders.routes.js` | `/api/orders`. Todos los roles; la propiedad se revisa en el servicio. |
 | ✏️ `sales.routes.js` | `/api/sales`. Solo admin y cajero. |
-| ✏️ `inventory.routes.js` | `/api/inventory`. Admin y cajero. |
+| ✏️ `inventory.routes.js` | `/api/inventory`: existencias, entradas, ajustes e historial de movimientos. Admin y cajero. |
+| 🆕 `users.routes.js` | `/api/users`: listar, crear y editar usuarios. Solo admin. No hay "borrar": los usuarios se desactivan, para que sus ventas sigan mostrando quién las hizo. |
 | ✏️ `tables.routes.js` | `/api/tables`. Todos. |
 | 🆕 `paymentMethods.routes.js` | `/api/payment-methods`: lista de medios de pago. |
 | 🆕 `health.routes.js` | `/api/health`: dice si el servidor y la base de datos funcionan (la nube lo usa para vigilar la app). |
@@ -425,7 +442,7 @@ responden.
 | Archivo | Para qué sirve |
 |---|---|
 | ✏️ `auth.controller.js` | Pone y borra la cookie del Refresh Token con sus protecciones. |
-| ✏️ `products.controller.js`, `categories.controller.js`, `orders.controller.js`, `sales.controller.js`, `tables.controller.js`, `inventory.controller.js` | Uno por cada tipo de dato. |
+| ✏️ `products.controller.js`, `categories.controller.js`, `orders.controller.js`, `sales.controller.js`, `tables.controller.js`, `inventory.controller.js`, 🆕 `users.controller.js` | Uno por cada tipo de dato. |
 
 **`services/`** — las reglas del negocio
 
@@ -435,7 +452,8 @@ responden.
 | ✏️ `orders.service.js` | El pedido siempre se crea a nombre del usuario que inició sesión. |
 | ✏️ `sales.service.js` | Después de cobrar, encola la revisión de stock bajo. |
 | ✏️ `products.service.js`, `categories.service.js`, `tables.service.js` | Devuelven "no encontrado" (404) cuando corresponde. |
-| `inventory.service.js` | Consulta del inventario. |
+| ✏️ `inventory.service.js` | Entradas y ajustes; solo el admin puede ajustar. |
+| 🆕 `users.service.js` | Crear y editar usuarios con contraseña cifrada. No deja quitar el último administrador ni desactivarse a uno mismo, y cierra las sesiones de quien se desactiva o cambia de rol o contraseña. |
 
 **`repositories/`** — las consultas SQL
 
@@ -446,8 +464,9 @@ responden.
 | ✏️ `orders.repository.js` | Crear pedidos sin duplicar (`localId`), máquina de estados y propiedad del pedido. Usa `FOR UPDATE`. |
 | ✏️ `sales.repository.js` | Cobro en una sola transacción con `FOR UPDATE`; si no hay stock responde 409 (conflicto). |
 | 🆕 `sessions.repository.js` | Consultas de la tabla `refresh_tokens`. |
-| ✏️ `inventory.repository.js` | Se agregó la búsqueda de productos con stock bajo. |
-| `tables.repository.js`, `users.repository.js` | Mesas y usuarios. |
+| ✏️ `inventory.repository.js` | Registra entradas y ajustes en una transacción con `FOR UPDATE` y sin duplicar (mismo `localId`); historial de movimientos; productos con stock bajo. |
+| ✏️ `users.repository.js` | Consultas de usuarios (listar, crear, actualizar). |
+| `tables.repository.js` | Mesas. |
 
 **`domain/`** — reglas puras (no tocan la base de datos)
 
@@ -490,6 +509,7 @@ responden.
 | 🆕 `integration/helpers.js` | Ayudas: enciende la API, crea usuarios de prueba y **borra todo al terminar**. |
 | 🆕 `integration/auth.test.js` | Login, cookie segura, rotación, robo de token, logout, cerrar todas las sesiones. |
 | 🆕 `integration/permissions-and-conflicts.test.js` | Permisos por rol, propiedad, pedidos sin duplicar, conflictos 409 y stock insuficiente. |
+| 🆕 `integration/inventory-and-users.test.js` | Entradas y ajustes de inventario (con permisos y sin duplicar) y manejo de usuarios (crear, desactivar, cambiar contraseña, no desactivarse a sí mismo). |
 
 ### 6.4 `Frontend/` — la aplicación web
 
@@ -532,7 +552,9 @@ responden.
 | ✏️ `categories.service.ts` | Igual para categorías. |
 | ✏️ `orders.service.ts` | Pedidos con modo offline. Ahora también se puede **cancelar sin conexión** un pedido que se creó sin conexión. |
 | ✏️ `tables.service.ts` | Mesas (con copia local). |
-| `sales.service.ts`, `inventory.service.ts` | Ventas e inventario (con copia local). |
+| ✏️ `inventory.service.ts` | Existencias, entradas (también sin conexión) y ajustes (solo con conexión), e historial. |
+| 🆕 `users.service.ts` | Usuarios (solo admin, con conexión). |
+| `sales.service.ts` | Ventas (con copia local). |
 
 **`stores/`** — estado global con Pinia
 
@@ -550,7 +572,7 @@ responden.
 | ✏️ `db.ts` | La base de datos del navegador (IndexedDB): copias de los datos, la cola `syncQueue` y el historial `syncLog`. |
 | ✏️ `queue.ts` | Agregar, leer, ordenar y reintentar operaciones pendientes. El orden es determinístico (por fecha y luego por id). |
 | ✏️ `sync.ts` | El **sincronizador**: envía la cola en orden, reemplaza ids temporales, aplica las reglas de conflicto y permite resolverlos a mano. |
-| 🆕 `syncRules.ts` | Las **reglas determinísticas** de la sección 5.7, escritas como funciones fáciles de probar. |
+| 🆕 `syncRules.ts` | Las **reglas determinísticas** de la sección 5.8, escritas como funciones fáciles de probar. |
 | 🆕 `serviceWorker.ts` | Registra el Service Worker (solo en la versión compilada). |
 | 🆕 `__tests__/syncRules.test.ts`, `__tests__/queue.test.ts` | Pruebas unitarias de las reglas y de la cola. |
 
@@ -565,7 +587,9 @@ responden.
 | ✏️ `TablesView.vue` | Mesas y sus pedidos activos. Ahora se puede entregar o cancelar **sin internet**. |
 | ✏️ `ProductsView.vue` | Menú de productos. Ahora funciona sin internet, envía la versión y avisa si hay conflicto. Solo el admin ve los botones de editar. |
 | ✏️ `CategoriesView.vue` | Categorías (solo admin), con versión para detectar conflictos. |
-| `InventoryView.vue`, `SalesHistoryView.vue` | Inventario e historial de ventas (admin y cajero). |
+| ✏️ `InventoryView.vue` | Existencias con botones **+ Entrada** y **Ajustar** (solo admin), e historial de movimientos. |
+| 🆕 `UsersView.vue` | "Usuarios" (solo admin): crear, editar, cambiar contraseña, activar y desactivar. |
+| `SalesHistoryView.vue` | Historial de ventas (admin y cajero). |
 | ✏️ `SyncView.vue` | Cola pendiente, **panel de conflictos** con botones para decidir, e **historial de resolución**. |
 | 🆕 `SessionsView.vue` | "Mis sesiones": ver en qué dispositivos está abierta la cuenta y cerrarlas. |
 
@@ -579,6 +603,8 @@ responden.
 | 🆕 `components/orders/NewOrderModal.vue` | Ventana para registrar un pedido nuevo (mesa, carrito y observaciones). |
 | 🆕 `components/orders/SaleModal.vue` | Ventana para cobrar: total y medio de pago. |
 | 🆕 `components/orders/OrdersSummary.vue` | Las tres tarjetas de resumen de pedidos. |
+| 🆕 `components/inventory/StockMovementModal.vue` | Ventana para registrar una entrada o un ajuste; muestra cómo quedará el stock. |
+| 🆕 `components/users/UserFormModal.vue` | Ventana para crear o editar un usuario, con botón para ver la contraseña. |
 | 🆕 `components/orders/__tests__/` | Pruebas de los componentes (se montan y se les hace clic, como lo haría una persona). |
 | 🆕 `composables/useCart.ts` | El carrito del pedido nuevo (agregar, sumar, restar, total). |
 | 🆕 `composables/useOrderActions.ts` | Entregar, cancelar y cobrar, con sus mensajes. Antes estaba copiado en dos pantallas. |
@@ -592,6 +618,7 @@ responden.
 | Archivo | Para qué sirve |
 |---|---|
 | 🆕 `global-setup.ts` | Antes de las pruebas aplica migraciones y crea los usuarios `e2e_admin` y `e2e_mesero`. |
+| 🆕 `admin-tools.spec.ts` | Entradas de inventario con y sin conexión, y crear un mesero desde la app y entrar con él. |
 | 🆕 `offline-flow.spec.ts` | Abre Chrome de verdad y prueba: tokens no expuestos, sesión al recargar, **pedido sin internet que se sincroniza solo** y que un mesero no vea opciones de admin. |
 
 ---
@@ -600,9 +627,9 @@ responden.
 
 | Tipo | Cantidad | Comando | Qué necesita |
 |---|---|---|---|
-| Backend unitarias + integración | 49 | `cd Backend && npm test` | PostgreSQL encendido (las de integración se saltan si no hay base) |
-| Frontend unitarias y de componentes | 36 | `cd Frontend && npm run test:unit` | Nada |
-| Punta a punta (E2E) | 4 | `cd Frontend && npm run test:e2e` | PostgreSQL y Chrome de Playwright (`npx playwright install chromium` la primera vez) |
+| Backend unitarias + integración | 63 | `cd Backend && npm test` | PostgreSQL encendido (las de integración se saltan si no hay base) |
+| Frontend unitarias y de componentes | 46 | `cd Frontend && npm run test:unit` | Nada |
+| Punta a punta (E2E) | 6 | `cd Frontend && npm run test:e2e` | PostgreSQL y Chrome de Playwright (`npx playwright install chromium` la primera vez) |
 | Revisión de tipos | — | `cd Frontend && npm run type-check` | Nada |
 
 - Las pruebas de integración crean usuarios que empiezan por `test_` y **los
@@ -628,6 +655,8 @@ Cómo se hizo (por si hay que repetirlo):
 4. En el servicio, pestaña **Environment**, crear `ADMIN_USERNAME` y
    `ADMIN_PASSWORD`. Al arrancar, el servidor crea ese administrador si no
    existe (así no se necesita la consola de Render, que es de pago).
+6. Entrar como administrador y crear los cajeros y meseros desde la pantalla
+   **Usuarios**.
 5. Cada vez que se suben cambios a la rama elegida, Render vuelve a
    desplegar solo.
 
@@ -652,7 +681,9 @@ funciona sin trucos.
    ingredientes, recetas). Se pueden presentar como trabajo futuro.
 3. **Contraseñas de `mesero2` y `cajero2`** (solo en la base local de
    Sebastián): se cifraron sus valores de prueba antiguos, que nadie conoce.
-   Si se necesitan, se cambian con `npm run create-user`.
+   Se les puede poner una nueva desde la pantalla **Usuarios**.
+4. **Mesas.** Solo existen las 5 mesas de los datos iniciales; no se pueden
+   agregar ni editar desde la aplicación.
 
 El guion para la sustentación está en [GUION_SUSTENTACION.md](GUION_SUSTENTACION.md).
 
